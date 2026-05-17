@@ -974,7 +974,6 @@ import re
 import threading
 import time
 import warnings
-from collections import deque
 from datetime import datetime
 from typing import Optional
 
@@ -1016,12 +1015,6 @@ EEG_BAUD = int(os.environ.get("EEG_BAUD", "57600"))
 ARDUINO_PORT = os.environ.get("ARDUINO_PORT")
 # Default 9600 — most common Arduino sketch baud. Override with ARDUINO_BAUD env var.
 ARDUINO_BAUD = int(os.environ.get("ARDUINO_BAUD", "9600"))
-ARDUINO_AUTO_BAUD = os.environ.get("ARDUINO_AUTO_BAUD", "1").strip().lower() not in {"0", "false", "no"}
-
-
-def arduino_baud_candidates(preferred: int) -> list[int]:
-    candidates = [preferred, 115200, 57600, 38400, 19200, 4800]
-    return list(dict.fromkeys(int(b) for b in candidates if int(b) > 0))
 
 IMG_SIZE         = 48        # must match training IMG_SIZE
 SEQ_LEN          = 10        # must match training SEQUENCE_LEN
@@ -1732,62 +1725,21 @@ def parse_arduino_line(line: str) -> Optional[dict]:
 
     aliases = {
         "gsr": "gsr",
-        "gsrvalue": "gsr",
-        "gsrraw": "gsr",
-        "gsrreading": "gsr",
-        "gsrsensor": "gsr",
-        "gsrsensorvalue": "gsr",
         "eda": "gsr",
-        "edavalue": "gsr",
-        "edaraw": "gsr",
         "electrodermalactivity": "gsr",
         "galvanicskinresponse": "gsr",
-        "galvanicskinresponsevalue": "gsr",
         "galvanicskin": "gsr",
         "skin": "gsr",
-        "skinvalue": "gsr",
         "ppg": "ppg",
-        "ppgvalue": "ppg",
-        "ppgraw": "ppg",
-        "ppgreading": "ppg",
-        "ppgsensor": "ppg",
-        "ppgsensorvalue": "ppg",
         "hr": "ppg",
         "heartrate": "ppg",
-        "heartratevalue": "ppg",
+        "heart_rate": "ppg",
         "bpm": "ppg",
-        "bpmvalue": "ppg",
         "pulse": "ppg",
-        "pulserate": "ppg",
         "heart": "ppg",
     }
 
     values: dict[str, float] = {}
-    ppg_priority = -1
-
-    def assign_value(key: str, value) -> None:
-        nonlocal ppg_priority
-        key_norm = re.sub(r"[^a-z]", "", key.lower())
-        norm = aliases.get(key_norm)
-        num = _coerce_float(str(value))
-        if norm is None or num is None:
-            return
-
-        if norm == "ppg":
-            is_bpm_label = key_norm in {
-                "hr", "heartrate", "heartratevalue",
-                "bpm", "bpmvalue", "pulse", "pulserate", "heart",
-            }
-            priority = 2 if is_bpm_label else 1 if 40 <= num <= 200 else 0
-            if priority == 0:
-                values["ppg_raw"] = num
-                return
-            if priority >= ppg_priority:
-                values["ppg"] = num
-                ppg_priority = priority
-            return
-
-        values[norm] = num
 
     # ── 1. JSON ──────────────────────────────────────────────────────────────
     if not values:
@@ -1795,7 +1747,10 @@ def parse_arduino_line(line: str) -> Optional[dict]:
             if text.startswith("{") and text.endswith("}"):
                 payload = json.loads(text)
                 for key, value in payload.items():
-                    assign_value(str(key), value)
+                    norm = aliases.get(re.sub(r"[^a-z]", "", key.lower()))
+                    num = _coerce_float(str(value))
+                    if norm and num is not None:
+                        values[norm] = num
         except Exception:
             pass
 
@@ -1803,24 +1758,13 @@ def parse_arduino_line(line: str) -> Optional[dict]:
     if not values:
         pairs = re.findall(r"([A-Za-z][A-Za-z_ ]{0,25})\s*[:=]\s*(-?\d+(?:\.\d+)?)", text)
         for key, value in pairs:
-            assign_value(key, value)
-
-    # ── 2b. Label + value without colon/equal, e.g. "GSR 512 PPG 75" ─────────
-    if not values:
-        key_pattern = (
-            r"galvanic\s+skin\s+response|electrodermal\s+activity|heart\s+rate|"
-            r"gsr|eda|ppg|hr|bpm|pulse|heart|skin"
-        )
-        token_pairs = re.findall(
-            rf"\b({key_pattern})\b(?:\s+(?:sensor|value|raw|reading|rate|bpm))*\s*[:=\-]?\s*(-?\d+(?:\.\d+)?)",
-            text,
-            flags=re.IGNORECASE,
-        )
-        for key, value in token_pairs:
-            assign_value(key, value)
+            norm = aliases.get(re.sub(r"[^a-z]", "", key.lower()))
+            num = _coerce_float(value)
+            if norm and num is not None:
+                values[norm] = num
 
     # ── 3. Plain comma/space separated numbers ───────────────────────────────
-    if not values and not re.search(r"[A-Za-z]", text):
+    if not values:
         nums = re.findall(r"-?\d+(?:\.\d+)?", text)
         if len(nums) >= 2:
             first  = _coerce_float(nums[0])
@@ -1833,8 +1777,8 @@ def parse_arduino_line(line: str) -> Optional[dict]:
                 elif 0 <= first <= 40952 and 40 <= second <= 200:
                     values = {"gsr": first, "ppg": second}
                 elif 0 <= first <= 40952 and 0 <= second <= 40952:
-                    # Both could be raw ADC values: assume col0=GSR, col1=PPG raw.
-                    values = {"gsr": first, "ppg_raw": second}
+                    # Both could be GSR-range: assume col0=GSR, col1=PPG-ish
+                    values = {"gsr": first, "ppg": min(second, 200)}
         elif len(nums) == 1:
             # Only one number — check if it's labelled somewhere in text
             val = _coerce_float(nums[0])
@@ -1852,7 +1796,6 @@ def parse_arduino_line(line: str) -> Optional[dict]:
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "gsr":      float(values["gsr"]) if "gsr" in values else None,
         "ppg":      float(values["ppg"]) if "ppg" in values else None,
-        "ppg_raw":  float(values["ppg_raw"]) if "ppg_raw" in values else None,
         "raw_line": text,
     }
 
@@ -1953,60 +1896,23 @@ class LiveArduinoReader:
     def __init__(self, port: Optional[str], baud: int):
         self.port = port
         self.baud = baud
-        self.baud_candidates = arduino_baud_candidates(baud)
         self.latest: Optional[dict] = None
-        self.latest_raw_line: Optional[str] = None
         self.error: Optional[str] = None
-        self.last_error: Optional[str] = None
-        self.last_parse_error: Optional[str] = None
         self.packet_count = 0
-        self.line_count = 0
-        self.started_at: Optional[str] = None
-        self.last_line_at: Optional[str] = None
-        self.estimated_bpm: Optional[float] = None
-        self._ppg_samples = deque(maxlen=800)
-        self._ppg_peaks = deque(maxlen=20)
-        self._last_ppg_peak_at = 0.0
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
-    def start(
-        self,
-        port: Optional[str] = None,
-        baud: Optional[int] = None,
-        restart: bool = False,
-    ) -> bool:
+    def start(self) -> bool:
         if serial is None:
             self.error = "pyserial not available"
             return False
 
-        if restart:
-            self.stop()
-
         with self._lock:
-            if port:
-                self.port = port
-            if baud:
-                self.baud = int(baud)
-                self.baud_candidates = arduino_baud_candidates(self.baud)
-            if self._thread and not self._thread.is_alive():
-                self._thread = None
             if self._thread and self._thread.is_alive():
                 return True
             self._stop.clear()
             self.error = None
-            self.last_parse_error = None
-            self.latest = None
-            self.latest_raw_line = None
-            self.packet_count = 0
-            self.line_count = 0
-            self.last_line_at = None
-            self.estimated_bpm = None
-            self._ppg_samples.clear()
-            self._ppg_peaks.clear()
-            self._last_ppg_peak_at = 0.0
-            self.started_at = datetime.now().isoformat(timespec="seconds")
             self._thread = threading.Thread(target=self._run, name="arduino-live-reader", daemon=True)
             self._thread.start()
             return True
@@ -2015,10 +1921,7 @@ class LiveArduinoReader:
         self._stop.set()
         thread = self._thread
         if thread and thread.is_alive():
-            thread.join(timeout=3.5)
-        with self._lock:
-            if self._thread is thread and (thread is None or not thread.is_alive()):
-                self._thread = None
+            thread.join(timeout=1.5)
 
     def is_running(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
@@ -2027,100 +1930,15 @@ class LiveArduinoReader:
         with self._lock:
             return dict(self.latest) if self.latest else None
 
-    def status(self) -> dict:
-        with self._lock:
-            latest = dict(self.latest) if self.latest else None
-            return {
-                "online": latest is not None,
-                "running": self.is_running(),
-                "port": self.port,
-                "baud": self.baud,
-                "baud_candidates": self.baud_candidates,
-                "gsr": latest.get("gsr") if latest else None,
-                "ppg": latest.get("ppg") if latest else None,
-                "ppg_raw": latest.get("ppg_raw") if latest else None,
-                "estimated_bpm": self.estimated_bpm,
-                "raw_line": latest.get("raw_line") if latest else self.latest_raw_line,
-                "timestamp": latest.get("timestamp") if latest else None,
-                "started_at": self.started_at,
-                "last_line_at": self.last_line_at,
-                "line_count": self.line_count,
-                "parsed_count": self.packet_count,
-                "last_parse_error": self.last_parse_error,
-                "error": self.error,
-                "last_error": self.last_error,
-            }
-
     def _set_error(self, message: str) -> None:
         with self._lock:
             self.error = message
-            self.last_error = message
-
-    def _set_active_baud(self, baud: int) -> None:
-        with self._lock:
-            self.baud = baud
-
-    def _set_raw_line(self, line: str) -> None:
-        with self._lock:
-            self.latest_raw_line = line
-            self.last_line_at = datetime.now().isoformat(timespec="seconds")
-            self.line_count += 1
 
     def _set_latest(self, reading: dict) -> None:
         with self._lock:
             self.latest = reading
             self.error = None
-            self.last_parse_error = None
             self.packet_count += 1
-
-    def _set_parse_error(self, line: str) -> None:
-        preview = line.strip()
-        if len(preview) > 120:
-            preview = preview[:117] + "..."
-        with self._lock:
-            self.last_parse_error = f"Unparsed Arduino line: {preview!r}"
-
-    def _update_ppg_bpm(self, raw_ppg: float) -> Optional[float]:
-        now = time.monotonic()
-        value = float(raw_ppg)
-        self._ppg_samples.append((now, value))
-
-        while self._ppg_samples and now - self._ppg_samples[0][0] > 10.0:
-            self._ppg_samples.popleft()
-
-        if len(self._ppg_samples) < 8:
-            return self.estimated_bpm
-
-        vals = np.array([sample for _, sample in self._ppg_samples], dtype=np.float32)
-        mean = float(vals.mean())
-        std = float(vals.std())
-        if std < 1.0:
-            return self.estimated_bpm
-
-        threshold = mean + 0.55 * std
-        prev = self._ppg_samples[-2][1]
-        crossed_up = prev <= threshold < value
-        refractory_ok = now - self._last_ppg_peak_at >= 0.35
-
-        if crossed_up and refractory_ok:
-            self._ppg_peaks.append(now)
-            self._last_ppg_peak_at = now
-
-        while self._ppg_peaks and now - self._ppg_peaks[0] > 12.0:
-            self._ppg_peaks.popleft()
-
-        if len(self._ppg_peaks) >= 2:
-            intervals = np.diff(np.array(self._ppg_peaks, dtype=np.float64))
-            intervals = intervals[(intervals >= 0.35) & (intervals <= 2.0)]
-            if len(intervals):
-                bpm = float(60.0 / np.median(intervals))
-                if 40.0 <= bpm <= 200.0:
-                    bpm = round(bpm, 1)
-                    with self._lock:
-                        self.estimated_bpm = bpm
-                    return bpm
-
-        return self.estimated_bpm
 
     def _run(self) -> None:
         port = self.port or find_arduino_port()
@@ -2129,72 +1947,21 @@ class LiveArduinoReader:
             return
         self.port = port
 
-        candidates = list(self.baud_candidates if ARDUINO_AUTO_BAUD else [self.baud])
-        if not candidates:
-            candidates = [9600]
-
-        while not self._stop.is_set():
-            for baud in candidates:
-                if self._stop.is_set():
-                    return
-                retry = self._read_from_port(port, baud)
-                if not retry:
-                    return
-            if not ARDUINO_AUTO_BAUD:
-                return
-            time.sleep(1.0)
-
-    def _read_from_port(self, port: str, baud: int) -> bool:
-        self._set_active_baud(baud)
         try:
-            with serial.Serial(port, baud, timeout=0.5, write_timeout=0.5) as stream:
-                try:
-                    stream.reset_input_buffer()
-                except Exception:
-                    pass
-                time.sleep(2.0)
-                opened_at = time.time()
-                local_lines = 0
-                local_parsed = 0
-
+            with serial.Serial(port, self.baud, timeout=1.0) as stream:
+                time.sleep(1.5)
                 while not self._stop.is_set():
                     raw = stream.readline()
                     if not raw:
-                        if local_lines == 0 and time.time() - opened_at > 4.0:
-                            if ARDUINO_AUTO_BAUD:
-                                self._set_error(f"No Arduino serial data at {baud} baud; trying next baud")
-                                return True
-                            self._set_error(f"No Arduino serial data received at {baud} baud")
-                            return False
-                        if local_lines > 0 and local_parsed == 0 and time.time() - opened_at > 10.0:
-                            if ARDUINO_AUTO_BAUD:
-                                self._set_error(f"Arduino data at {baud} baud is not parseable; trying next baud")
-                                return True
                         continue
-
-                    local_lines += 1
                     line = raw.decode("utf-8", errors="replace")
-                    self._set_raw_line(line.strip())
                     parsed = parse_arduino_line(line)
                     if parsed:
-                        if parsed.get("ppg_raw") is not None and parsed.get("ppg") is None:
-                            bpm = self._update_ppg_bpm(parsed["ppg_raw"])
-                            parsed["estimated_bpm"] = bpm
-                            if bpm is not None:
-                                parsed["ppg"] = bpm
                         parsed["port"] = port
-                        parsed["baud"] = baud
-                        local_parsed += 1
+                        parsed["baud"] = self.baud
                         self._set_latest(parsed)
-                    else:
-                        self._set_parse_error(line)
-                        if local_parsed == 0 and time.time() - opened_at > 10.0 and ARDUINO_AUTO_BAUD:
-                            self._set_error(f"Arduino data at {baud} baud is not parseable; trying next baud")
-                            return True
-                return False
         except Exception as exc:
             self._set_error(str(exc))
-            return False
 
 
 eeg_reader = LiveEEGReader(EEG_PORT, EEG_BAUD)
@@ -2213,7 +1980,6 @@ def live_sensor_snapshot() -> dict:
 
     eeg = eeg_reader.snapshot() or {}
     arduino = arduino_reader.snapshot() or {}
-    arduino_status = arduino_reader.status()
 
     merged = {
         "online": bool(eeg or arduino),
@@ -2236,42 +2002,13 @@ def live_sensor_snapshot() -> dict:
         "blink_strength": eeg.get("blink_strength"),
         "gsr": arduino.get("gsr"),
         "ppg": arduino.get("ppg"),
-        "ppg_raw": arduino.get("ppg_raw"),
-        "estimated_bpm": arduino.get("estimated_bpm"),
     }
 
     for band in BAND_NAMES:
         merged[band] = eeg.get(band)
 
     merged["arduino_raw_line"] = arduino.get("raw_line")
-    merged["arduino_diagnostics"] = {
-        "line_count": arduino_status["line_count"],
-        "parsed_count": arduino_status["parsed_count"],
-        "last_line_at": arduino_status["last_line_at"],
-        "last_parse_error": arduino_status["last_parse_error"],
-        "raw_line": arduino_status["raw_line"],
-    }
     return merged
-
-
-def eeg_live_snapshot() -> dict:
-    eeg_reader.start()
-    eeg = eeg_reader.snapshot() or {}
-    data = {
-        "online": bool(eeg),
-        "running": eeg_reader.is_running(),
-        "port": eeg_reader.port,
-        "baud": eeg_reader.baud,
-        "error": eeg_reader.error,
-        "timestamp": eeg.get("timestamp"),
-        "poor_signal": eeg.get("poor_signal"),
-        "attention": eeg.get("attention"),
-        "meditation": eeg.get("meditation"),
-        "blink_strength": eeg.get("blink_strength"),
-    }
-    for band in BAND_NAMES:
-        data[band] = eeg.get(band)
-    return data
 
 
 # ── Pydantic schemas ──────────────────────────────────────────────────────────
@@ -2301,107 +2038,6 @@ def _sensor_to_vals(s: SensorInput) -> list[float]:
     ]
 
 
-SENSOR_INPUT_FIELDS = [
-    "gsr", "ppg",
-    "delta", "theta",
-    "low_alpha", "high_alpha",
-    "low_beta",  "high_beta",
-    "low_gamma", "mid_gamma",
-]
-
-SENSOR_INPUT_RANGES = {
-    "gsr":        (0.0, 40952.0),
-    "ppg":        (40.0, 200.0),
-    "delta":      (0.0, 1.0),
-    "theta":      (0.0, 1.0),
-    "low_alpha":  (0.0, 1.0),
-    "high_alpha": (0.0, 1.0),
-    "low_beta":   (0.0, 1.0),
-    "high_beta":  (0.0, 1.0),
-    "low_gamma":  (0.0, 1.0),
-    "mid_gamma":  (0.0, 1.0),
-}
-
-LIVE_SENSOR_DEFAULTS = {
-    "gsr":        2000.0,
-    "ppg":        72.0,
-    "delta":      0.30,
-    "theta":      0.25,
-    "low_alpha":  0.40,
-    "high_alpha": 0.35,
-    "low_beta":   0.20,
-    "high_beta":  0.18,
-    "low_gamma":  0.12,
-    "mid_gamma":  0.10,
-}
-
-
-def _clamp_sensor_value(name: str, value: float) -> float:
-    lo, hi = SENSOR_INPUT_RANGES[name]
-    return max(lo, min(hi, float(value)))
-
-
-def _live_snapshot_to_sensor_values(
-    snapshot: dict,
-    allow_defaults: bool = False,
-) -> tuple[dict[str, float], list[str], list[str]]:
-    """Build a model-ready 10-channel vector from the latest live readings."""
-    values: dict[str, float] = {}
-    missing: list[str] = []
-    defaults_used: list[str] = []
-
-    for name in SENSOR_INPUT_FIELDS:
-        value = snapshot.get(name)
-        if value is None:
-            missing.append(name)
-            if not allow_defaults:
-                continue
-            value = LIVE_SENSOR_DEFAULTS[name]
-            defaults_used.append(name)
-        values[name] = round(_clamp_sensor_value(name, value), 4)
-
-    return values, missing, defaults_used
-
-
-def _assessment_from_vals(
-    vals: list[float],
-    *,
-    facial_res: Optional[dict] = None,
-    gradcam_res: Optional[dict] = None,
-    include_shap: bool = True,
-) -> dict:
-    """Shared result builder for manual and live sensor assessment paths."""
-    sensor_res    = mgr.predict_sensor(vals)
-    future_res    = mgr.predict_future(vals)
-    future_states = [f["state"] for f in future_res]
-
-    emotion = facial_res["emotion"] if facial_res else "Neutral"
-    recs    = mgr.recommendations(sensor_res["state"], emotion, future_states)
-
-    shap_sensor_res = None
-    shap_future_res = None
-    if include_shap:
-        try:
-            shap_sensor_res = mgr.explain_shap_sensor(vals)
-        except Exception as exc:
-            print(f"  [shap_sensor] skipped: {exc}")
-        try:
-            shap_future_res = mgr.explain_shap_future(vals)
-        except Exception as exc:
-            print(f"  [shap_future] skipped: {exc}")
-
-    return {
-        "sensor":          sensor_res,
-        "facial":          facial_res,
-        "future":          future_res,
-        "shap_sensor":     shap_sensor_res,
-        "shap_future":     shap_future_res,
-        "gradcam":         gradcam_res,
-        "recommendations": recs,
-        "timestamp":       datetime.now().isoformat(),
-    }
-
-
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.get("/api/status", summary="Model loading status")
@@ -2424,11 +2060,7 @@ def api_sensors_live():
 
 @app.get("/api/eeg/live", summary="Backward-compatible live sensor alias")
 def api_eeg_live():
-    data = eeg_live_snapshot()
-    if data.get("timestamp"):
-        age = time.time() - datetime.fromisoformat(data["timestamp"]).timestamp()
-        data["age_seconds"] = round(age, 2)
-    return data
+    return api_sensors_live()
 
 
 @app.post("/api/sensors/stop", summary="Stop live sensor readers")
@@ -2440,49 +2072,61 @@ def api_sensors_stop():
 
 @app.post("/api/eeg/stop", summary="Backward-compatible stop alias")
 def api_eeg_stop():
-    eeg_reader.stop()
-    return {
-        "online": False,
-        "running": {
-            "eeg": False,
-            "arduino": arduino_reader.is_running(),
-        },
-    }
+    return api_sensors_stop()
 
 
 @app.get("/api/arduino/live", summary="Live GSR + PPG from Arduino serial port")
 def api_arduino_live():
     """Start the Arduino reader and return the latest GSR/PPG snapshot."""
     arduino_reader.start()
-    status = arduino_reader.status()
-    if status["timestamp"]:
+    snap = arduino_reader.snapshot()
+    running = arduino_reader.is_running()
+    if snap:
         age = round(
-            time.time() - datetime.fromisoformat(status["timestamp"]).timestamp(), 2
+            time.time() - datetime.fromisoformat(snap["timestamp"]).timestamp(), 2
         )
-    else:
-        age = None
-    status["age_seconds"] = age
-    return status
+        return {
+            "online": True,
+            "running": running,
+            "port": arduino_reader.port,
+            "baud": arduino_reader.baud,
+            "gsr":  snap.get("gsr"),
+            "ppg":  snap.get("ppg"),
+            "raw_line": snap.get("raw_line"),
+            "timestamp": snap.get("timestamp"),
+            "age_seconds": age,
+            "error": None,
+        }
+    return {
+        "online": False,
+        "running": running,
+        "port": arduino_reader.port,
+        "baud": arduino_reader.baud,
+        "gsr":  None,
+        "ppg":  None,
+        "raw_line": None,
+        "timestamp": None,
+        "age_seconds": None,
+        "error": arduino_reader.error,
+    }
 
 
 @app.post("/api/arduino/start", summary="Explicitly start the Arduino serial reader")
-def api_arduino_start(
-    port: Optional[str] = None,
-    baud: Optional[int] = None,
-    restart: bool = False,
-):
-    ok = arduino_reader.start(port=port, baud=baud, restart=restart)
-    status = arduino_reader.status()
-    status["started"] = ok
-    return status
+def api_arduino_start():
+    ok = arduino_reader.start()
+    return {
+        "started": ok,
+        "running": arduino_reader.is_running(),
+        "port":    arduino_reader.port,
+        "baud":    arduino_reader.baud,
+        "error":   arduino_reader.error,
+    }
 
 
 @app.post("/api/arduino/stop", summary="Stop the Arduino serial reader")
 def api_arduino_stop():
     arduino_reader.stop()
-    status = arduino_reader.status()
-    status["running"] = False
-    return status
+    return {"running": False, "port": arduino_reader.port}
 
 
 
@@ -2499,41 +2143,6 @@ def api_sensor(s: SensorInput):
 @app.post("/api/predict/future", summary="5-step sensor forecast (Seq2Seq LSTM)")
 def api_future(s: SensorInput):
     return {"forecast": mgr.predict_future(_sensor_to_vals(s))}
-
-
-@app.get("/api/predict/live", summary="Live mental state from connected biosensors")
-def api_live_prediction(allow_defaults: bool = False):
-    """
-    Start the serial readers if needed, merge latest EEG/GSR/PPG biosignals,
-    and immediately run the sensor classifier plus 5-step forecast.
-    """
-    live = live_sensor_snapshot()
-    sensor_input, missing, defaults_used = _live_snapshot_to_sensor_values(
-        live,
-        allow_defaults=allow_defaults,
-    )
-
-    if missing and not allow_defaults:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": "Waiting for complete live biosignal data",
-                "missing": missing,
-                "live": live,
-            },
-        )
-
-    vals = [sensor_input[name] for name in SENSOR_INPUT_FIELDS]
-    result = _assessment_from_vals(vals, include_shap=False)
-    result["sensor_input"] = sensor_input
-    result["live"] = {
-        **live,
-        "complete": not missing,
-        "missing": missing,
-        "defaults_used": defaults_used,
-    }
-    result["mode"] = "live"
-    return result
 
 
 @app.post("/api/explain/shap/sensor", summary="SHAP feature importance for RNN sensor model")
@@ -2567,6 +2176,10 @@ async def api_complete(
 ):
     vals = [gsr, ppg, delta, theta, low_alpha, high_alpha, low_beta, high_beta, low_gamma, mid_gamma]
 
+    sensor_res    = mgr.predict_sensor(vals)
+    future_res    = mgr.predict_future(vals)
+    future_states = [f["state"] for f in future_res]
+
     # Facial is optional — skip gracefully if no image supplied
     facial_res  = None
     gradcam_res = None
@@ -2579,15 +2192,31 @@ async def api_complete(
             except Exception as exc:
                 print(f"  [facial] skipped: {exc}")
 
-    result = _assessment_from_vals(
-        vals,
-        facial_res=facial_res,
-        gradcam_res=gradcam_res,
-        include_shap=True,
-    )
-    result["sensor_input"] = dict(zip(SENSOR_INPUT_FIELDS, vals))
-    result["mode"] = "manual"
-    return result
+    emotion = facial_res["emotion"] if facial_res else "Neutral"
+    recs    = mgr.recommendations(sensor_res["state"], emotion, future_states)
+
+    # SHAP explanations — best-effort; never crash the full pipeline
+    shap_sensor_res = None
+    shap_future_res = None
+    try:
+        shap_sensor_res = mgr.explain_shap_sensor(vals)
+    except Exception as exc:
+        print(f"  [shap_sensor] skipped: {exc}")
+    try:
+        shap_future_res = mgr.explain_shap_future(vals)
+    except Exception as exc:
+        print(f"  [shap_future] skipped: {exc}")
+
+    return {
+        "sensor":          sensor_res,
+        "facial":          facial_res,
+        "future":          future_res,
+        "shap_sensor":     shap_sensor_res,
+        "shap_future":     shap_future_res,
+        "gradcam":         gradcam_res,
+        "recommendations": recs,
+        "timestamp":       datetime.now().isoformat(),
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2739,319 +2368,52 @@ input[type=range]::-webkit-slider-thumb:hover{box-shadow:0 0 14px var(--teal)}
 .change-tile .cv{font-family:var(--font-mono);font-size:.85rem;font-weight:500}.change-tile .cl{font-size:.62rem;color:var(--text3);margin-top:2px}
 .cv-up{color:var(--coral)}.cv-dn{color:var(--green)}.cv-fl{color:var(--text2)}
 .trend-badge{display:flex;align-items:center;gap:10px;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-size:.85rem;font-weight:500;}
-.trend-worsen{background:rgba(255,94,125,.08);border:1px solid rgba(255,94,125,.25);color:var(--coral)}
-.trend-improve{background:rgba(46,204,138,.08);border:1px solid rgba(46,204,138,.25);color:var(--green)}
-.trend-stable{background:var(--surface2);border:1px solid var(--border);color:var(--text2)}
-.emotion-tip{padding:10px 14px;border-radius:8px;font-size:.83rem;margin-bottom:16px;background:var(--violet-glow);border-left:3px solid var(--violet);color:var(--text);}
-.rec-section{margin-bottom:18px}
-.rec-label{font-size:.7rem;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);margin-bottom:8px;display:flex;align-items:center;gap:8px;}
-.rec-tag{padding:2px 7px;border-radius:999px;font-size:.65rem;font-weight:600;margin-left:6px;}
-.tag-red{background:rgba(255,94,125,.12);border:1px solid rgba(255,94,125,.3);color:var(--coral)}
-.tag-green{background:rgba(46,204,138,.1);border:1px solid rgba(46,204,138,.3);color:var(--green)}
-.tag-blue{background:rgba(74,158,255,.1);border:1px solid rgba(74,158,255,.3);color:var(--blue)}
-.rec-list{list-style:none;display:flex;flex-direction:column;gap:6px}
-.rec-list li{padding:9px 12px;border-radius:8px;font-size:.83rem;line-height:1.55;background:var(--surface2);border-left:2px solid var(--border2);transition:border-color .2s;}
-.rec-first-aid li{border-left-color:var(--coral)}.rec-lifestyle li{border-left-color:var(--teal)}.rec-professional li{border-left-color:var(--violet)}
-.rec-list li:hover{background:var(--surface3)}
-#gradcam-canvas{border-radius:8px;width:100%;margin-top:10px;display:none}
-.notice{padding:10px 14px;border-radius:8px;font-size:.82rem;background:rgba(255,181,71,.07);border:1px solid rgba(255,181,71,.2);color:var(--amber);margin-bottom:14px;}
-.hidden{display:none!important}
-.fade-in{animation:fadeIn .5s ease}
-@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
-section{margin-bottom:40px}
-kbd{background:var(--surface2);border:1px solid var(--border2);border-radius:4px;padding:1px 6px;font-family:var(--font-mono);font-size:.75rem;color:var(--text2);}
-</style>
-</head>
-<body>
-<header>
-  <div class="logo">
-    <div class="logo-mark">🧠</div>
-    <div class="logo-name">Mind<em>Sense</em> AI</div>
-  </div>
-  <div class="status-bar" id="status-bar">
-    <div class="chip" id="chip-eeg" style="cursor:pointer;" onclick="toggleEEG()"><div class="chip-dot" id="d-eeg"></div>EEG LIVE</div>
-    <div class="chip" id="chip-ard" style="cursor:pointer;" onclick="toggleArduino()"><div class="chip-dot" id="d-ard"></div>ARDUINO LIVE</div>
-    <div class="chip"><div class="chip-dot pulse" id="d-cnn"></div>Facial CNN</div>
-    <div class="chip"><div class="chip-dot pulse" id="d-rnn"></div>RNN Sensor</div>
-    <div class="chip"><div class="chip-dot pulse" id="d-pred"></div>Predictor</div>
-    <div class="chip"><div class="chip-dot pulse" id="d-scaler"></div>Scaler</div>
-    <div class="chip"><div class="chip-dot pulse" id="d-shap"></div>SHAP</div>
-  </div>
-</header>
-<main>
-<section>
-  <div class="sec-head"><h2>Patient Input</h2><div class="sec-head-line"></div><span class="sec-badge badge-teal">Step 1</span></div>
-  <div class="grid-2">
-    <div class="card">
-      <div class="card-head"><div class="card-icon ci-teal">📸</div><h3>Facial Expression <span style="font-weight:400;color:var(--text3);font-size:.78rem">(optional)</span></h3></div>
-      <div class="card-body">
-        <div id="cam-ph" class="cam-ph" onclick="startCam()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
-          <span>Click to enable webcam</span>
-        </div>
-        <video id="video" autoplay playsinline></video>
-        <canvas id="canvas"></canvas>
-        <img id="snap-preview" alt="Captured frame">
-        <div class="btn-row">
-          <button class="btn btn-ghost hidden" id="btn-cap" onclick="capture()">📸 Capture <kbd>C</kbd></button>
-          <button class="btn btn-ghost hidden" id="btn-ret" onclick="retake()">↺ Retake</button>
-          <button class="btn btn-ghost hidden" id="btn-stop" onclick="stopCam()">✕ Stop</button>
-        </div>
-        <p style="font-size:.73rem;color:var(--text3);margin-top:10px">Webcam is optional. Facial emotion will be skipped if not captured.</p>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-head"><div class="card-icon ci-coral">📡</div><h3>Physiological Sensors</h3></div>
-      <div class="card-body">
-        <form id="sform" onsubmit="analyze(event)">
-          <div class="field-group">
-            <div class="field-group-title">Biometric Signals</div>
-            <div class="field">
-              <div class="field-label">GSR — Galvanic Skin Response <span class="val" id="lv-gsr">2000</span></div>
-              <input type="range" id="gsr" min="0" max="40952" step="1" value="2000" oninput="syncSlider('gsr','lv-gsr',this.value,'')">
-            </div>
-            <div class="field">
-              <div class="field-label">PPG — Heart Rate <span class="val" id="lv-ppg">72 bpm</span></div>
-              <input type="range" id="ppg" min="40" max="200" step="1" value="72" oninput="syncSlider('ppg','lv-ppg',this.value,' bpm')">
-            </div>
-          </div>
-          <div class="field-group">
-            <div class="field-group-title">EEG Band Power (normalised 0–1)</div>
-            <div class="grid-2" style="gap:10px">
-              <div class="field"><div class="field-label">Delta <span class="val" id="lv-delta">0.30</span></div><input type="range" id="delta" min="0" max="1" step="0.01" value="0.30" oninput="syncSlider('delta','lv-delta',parseFloat(this.value).toFixed(2),'')"></div>
-              <div class="field"><div class="field-label">Theta <span class="val" id="lv-theta">0.25</span></div><input type="range" id="theta" min="0" max="1" step="0.01" value="0.25" oninput="syncSlider('theta','lv-theta',parseFloat(this.value).toFixed(2),'')"></div>
-              <div class="field"><div class="field-label">Low Alpha <span class="val" id="lv-la">0.40</span></div><input type="range" id="low_alpha" min="0" max="1" step="0.01" value="0.40" oninput="syncSlider('low_alpha','lv-la',parseFloat(this.value).toFixed(2),'')"></div>
-              <div class="field"><div class="field-label">High Alpha <span class="val" id="lv-ha">0.35</span></div><input type="range" id="high_alpha" min="0" max="1" step="0.01" value="0.35" oninput="syncSlider('high_alpha','lv-ha',parseFloat(this.value).toFixed(2),'')"></div>
-              <div class="field"><div class="field-label">Low Beta <span class="val" id="lv-lb">0.20</span></div><input type="range" id="low_beta" min="0" max="1" step="0.01" value="0.20" oninput="syncSlider('low_beta','lv-lb',parseFloat(this.value).toFixed(2),'')"></div>
-              <div class="field"><div class="field-label">High Beta <span class="val" id="lv-hb">0.18</span></div><input type="range" id="high_beta" min="0" max="1" step="0.01" value="0.18" oninput="syncSlider('high_beta','lv-hb',parseFloat(this.value).toFixed(2),'')"></div>
-              <div class="field"><div class="field-label">Low Gamma <span class="val" id="lv-lg">0.12</span></div><input type="range" id="low_gamma" min="0" max="1" step="0.01" value="0.12" oninput="syncSlider('low_gamma','lv-lg',parseFloat(this.value).toFixed(2),'')"></div>
-              <div class="field"><div class="field-label">Mid Gamma <span class="val" id="lv-mg">0.10</span></div><input type="range" id="mid_gamma" min="0" max="1" step="0.01" value="0.10" oninput="syncSlider('mid_gamma','lv-mg',parseFloat(this.value).toFixed(2),'')"></div>
-            </div>
-          </div>
-          <button type="submit" class="btn btn-primary btn-full">🔬 Run Full Assessment</button>
-          <button type="button" class="btn btn-ghost btn-full" id="btn-live-start" onclick="startLiveAssessment()">▶ Process Live Signals</button>
-          <button type="button" class="btn btn-ghost btn-full hidden" id="btn-live-stop" onclick="stopLiveAssessment()">■ Stop Live Result</button>
-          <div id="live-result-note" class="notice hidden" style="margin-top:12px"></div>
-        </form>
-      </div>
-    </div>
-  </div>
-</section>
-<div id="results" class="hidden">
-  <div id="spinner" class="spinner-wrap"><div class="spinner"></div><div class="spinner-txt">Analysing biosignals…</div></div>
-  <div id="res-content" class="hidden">
-    <section>
-      <div class="sec-head"><h2>Current Assessment</h2><div class="sec-head-line"></div><span class="sec-badge badge-coral">Live</span></div>
-      <div class="grid-2">
-        <div class="card fade-in">
-          <div class="card-head"><div class="card-icon ci-coral">🧠</div><h3>Mental State</h3></div>
-          <div class="card-body">
-            <div class="hero-result"><div class="hero-icon" id="state-icon">🧠</div>
-              <div><div class="hero-label" id="state-label">—</div><div class="hero-sub">BiLSTM + GRU + Attention · 10 sensor channels</div></div>
-              <div class="hero-conf"><span class="big" id="state-conf">—</span><small>confidence</small></div>
-            </div>
-            <div id="state-probs"></div>
-            <div class="sensor-grid" id="sensor-tiles"></div>
-          </div>
-        </div>
-        <div class="card fade-in">
-          <div class="card-head"><div class="card-icon ci-teal">😊</div><h3>Facial Emotion</h3></div>
-          <div class="card-body">
-            <div id="no-facial" class="notice">No image captured — sensor-only mode</div>
-            <div id="yes-facial" class="hidden">
-              <div class="hero-result"><div class="hero-icon" id="emotion-icon">😊</div>
-                <div><div class="hero-label" id="emotion-label">—</div><div class="hero-sub">Residual CNN · GradCAM XAI</div></div>
-                <div class="hero-conf"><span class="big" id="emotion-conf">—</span><small>confidence</small></div>
-              </div>
-              <div id="emotion-probs"></div>
-              <div id="gradcam-wrap" class="hidden"><p style="font-size:.72rem;color:var(--text3);margin-bottom:4px">GradCAM attention heatmap</p><canvas id="gradcam-canvas"></canvas></div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-    <section>
-      <div class="sec-head"><h2>5-Step Physiological Forecast</h2><div class="sec-head-line"></div><span class="sec-badge badge-violet">Seq2Seq LSTM</span></div>
-      <div class="card fade-in">
-        <div class="card-head"><div class="card-icon ci-amber">🔮</div><h3>Future State Timeline</h3></div>
-        <div class="card-body"><div id="change-summary" class="change-grid"></div><div class="timeline" id="timeline"></div></div>
-      </div>
-    </section>
-    <section>
-      <div class="sec-head"><h2>Explainability (XAI)</h2><div class="sec-head-line"></div><span class="sec-badge badge-violet">SHAP</span></div>
-      <div class="grid-2">
-        <div class="card fade-in"><div class="card-head"><div class="card-icon ci-violet">🔍</div><h3>Current State — SHAP Feature Importance</h3></div><div class="card-body" id="shap-sensor-content"><p style="color:var(--text3);font-size:.82rem">Loading SHAP…</p></div></div>
-        <div class="card fade-in"><div class="card-head"><div class="card-icon ci-blue">📊</div><h3>Future Prediction — SHAP per Step</h3></div><div class="card-body" id="shap-future-content"><p style="color:var(--text3);font-size:.82rem">Loading SHAP…</p></div></div>
-      </div>
-    </section>
-    <section>
-      <div class="sec-head"><h2>AI Recommendations</h2><div class="sec-head-line"></div><span class="sec-badge badge-teal">Personalised</span></div>
-      <div class="card fade-in"><div class="card-head"><div class="card-icon ci-green">💡</div><h3>Health Guidance</h3></div><div class="card-body" id="rec-body"></div></div>
-    </section>
-  </div>
-</div>
-</main>
-<script>
-let stream=null,blob=null;
-let eegInterval=null, ardInterval=null, liveProcessInterval=null;
-const SENSOR_IDS=['gsr','ppg','delta','theta','low_alpha','high_alpha','low_beta','high_beta','low_gamma','mid_gamma'];
-const SENSOR_LABEL_IDS={gsr:'lv-gsr',ppg:'lv-ppg',delta:'lv-delta',theta:'lv-theta',low_alpha:'lv-la',high_alpha:'lv-ha',low_beta:'lv-lb',high_beta:'lv-hb',low_gamma:'lv-lg',mid_gamma:'lv-mg'};
+):
+    vals = [gsr, ppg, delta, theta, low_alpha, high_alpha, low_beta, high_beta, low_gamma, mid_gamma]
 
-async function fetchEEG() {
-  try {
-    const res = await fetch('/api/eeg/live');
-    if (!res.ok) throw new Error('network error');
-    const data = await res.json();
-    document.getElementById('d-eeg').className = 'chip-dot ' + (data.online ? 'ok' : '');
-    if (data.online) {
-        ['delta','theta','low_alpha','high_alpha','low_beta','high_beta','low_gamma','mid_gamma'].forEach(k => {
-            if (data[k] !== undefined && data[k] !== null) {
-                const el = document.getElementById(k);
-                if (el) { el.value = data[k]; syncSlider(k, 'lv-'+(k==='low_alpha'?'la':k==='high_alpha'?'ha':k==='low_beta'?'lb':k==='high_beta'?'hb':k==='low_gamma'?'lg':k==='mid_gamma'?'mg':k), data[k].toFixed(2), ''); }
-            }
-        });
+    sensor_res    = mgr.predict_sensor(vals)
+    future_res    = mgr.predict_future(vals)
+    future_states = [f["state"] for f in future_res]
+
+    # Facial is optional — skip gracefully if no image supplied
+    facial_res  = None
+    gradcam_res = None
+    if file and file.filename:
+        content = await file.read()
+        if content:
+            try:
+                facial_res  = mgr.predict_facial(content)
+                gradcam_res = mgr.gradcam(content)
+            except Exception as exc:
+                print(f"  [facial] skipped: {exc}")
+
+    emotion = facial_res["emotion"] if facial_res else "Neutral"
+    recs    = mgr.recommendations(sensor_res["state"], emotion, future_states)
+
+    # SHAP explanations — best-effort; never crash the full pipeline
+    shap_sensor_res = None
+    shap_future_res = None
+    try:
+        shap_sensor_res = mgr.explain_shap_sensor(vals)
+    except Exception as exc:
+        print(f"  [shap_sensor] skipped: {exc}")
+    try:
+        shap_future_res = mgr.explain_shap_future(vals)
+    except Exception as exc:
+        print(f"  [shap_future] skipped: {exc}")
+
+    return {
+        "sensor":          sensor_res,
+        "facial":          facial_res,
+        "future":          future_res,
+        "shap_sensor":     shap_sensor_res,
+        "shap_future":     shap_future_res,
+        "gradcam":         gradcam_res,
+        "recommendations": recs,
+        "timestamp":       datetime.now().isoformat(),
     }
-  } catch (err) {
-    document.getElementById('d-eeg').className = 'chip-dot';
-  }
-}
 
-async function fetchArduino() {
-  try {
-    const res = await fetch('/api/arduino/live');
-    if (!res.ok) throw new Error('network error');
-    const data = await res.json();
-    document.getElementById('d-ard').className = 'chip-dot ' + (data.online ? 'ok' : (data.running ? 'pulse' : ''));
-    const chip=document.getElementById('chip-ard');
-    if(chip){chip.title=data.online?'Arduino data received':(data.last_parse_error||data.error||'Waiting for Arduino serial lines');}
-    if (data.online) {
-        if (data.gsr !== undefined && data.gsr !== null) {
-            const el = document.getElementById('gsr');
-            if (el) { el.value = data.gsr; syncSlider('gsr', 'lv-gsr', Math.round(data.gsr), ''); }
-        }
-        if (data.ppg !== undefined && data.ppg !== null) {
-            const el = document.getElementById('ppg');
-            if (el) { el.value = data.ppg; syncSlider('ppg', 'lv-ppg', Math.round(data.ppg), ' bpm'); }
-        }
-    }
-  } catch (err) {
-    document.getElementById('d-ard').className = 'chip-dot';
-  }
-}
 
-function toggleEEG() {
-  if (eegInterval) { clearInterval(eegInterval); eegInterval = null; fetch('/api/eeg/stop', {method: 'POST'}); document.getElementById('d-eeg').className = 'chip-dot'; document.getElementById('chip-eeg').style.borderColor='var(--border)'; }
-  else { eegInterval = setInterval(fetchEEG, 1000); fetchEEG(); document.getElementById('chip-eeg').style.borderColor='var(--teal)'; }
-}
-
-function toggleArduino() {
-  if (ardInterval) { clearInterval(ardInterval); ardInterval = null; fetch('/api/arduino/stop', {method: 'POST'}); document.getElementById('d-ard').className = 'chip-dot'; document.getElementById('chip-ard').style.borderColor='var(--border)'; }
-  else { fetch('/api/arduino/start?restart=true', {method: 'POST'}); ardInterval = setInterval(fetchArduino, 1000); fetchArduino(); document.getElementById('chip-ard').style.borderColor='var(--coral)'; }
-}
-
-function ensureLiveReaders(){
-  if(!eegInterval){eegInterval=setInterval(fetchEEG,1000);fetchEEG();document.getElementById('chip-eeg').style.borderColor='var(--teal)';}
-  if(!ardInterval){fetch('/api/arduino/start?restart=true',{method:'POST'});ardInterval=setInterval(fetchArduino,1000);fetchArduino();document.getElementById('chip-ard').style.borderColor='var(--coral)';}
-}
-
-async function processLiveSignals(){
-  ensureLiveReaders();
-  show('results');
-  if(document.getElementById('res-content').classList.contains('hidden'))document.getElementById('spinner').style.display='flex';
-  try{
-    const res=await fetch('/api/predict/live');
-    if(!res.ok){
-      const err=await res.json().catch(()=>({detail:'Waiting for live biosignals'}));
-      const detail=err.detail||{};
-      const missing=Array.isArray(detail.missing)?detail.missing.join(', '):'sensor channels';
-      const diag=detail.live&&detail.live.arduino_diagnostics?detail.live.arduino_diagnostics:{};
-      const extra=diag.last_parse_error?' · '+diag.last_parse_error:(diag.raw_line?' · Last Arduino line: '+diag.raw_line:'');
-      setLiveNote((detail.message||'Waiting for complete live biosignal data')+': '+missing+extra);
-      document.getElementById('spinner').style.display='none';
-      return;
-    }
-    const data=await res.json();
-    updateSensorControls(data.sensor_input||{});
-    setLiveNote('Live result is processing from EEG, GSR, and PPG readings.');
-    renderResults(data,{scroll:false});
-  }catch(err){
-    setLiveNote('Live processing error: '+err.message);
-  }finally{
-    document.getElementById('spinner').style.display='none';
-  }
-}
-
-function startLiveAssessment(){
-  if(liveProcessInterval)return;
-  show('btn-live-stop');
-  document.getElementById('btn-live-start').disabled=true;
-  setLiveNote('Starting live sensor readers...');
-  processLiveSignals();
-  liveProcessInterval=setInterval(processLiveSignals,2500);
-}
-
-function stopLiveAssessment(){
-  if(liveProcessInterval){clearInterval(liveProcessInterval);liveProcessInterval=null;}
-  if(eegInterval){clearInterval(eegInterval);eegInterval=null;fetch('/api/eeg/stop',{method:'POST'});document.getElementById('d-eeg').className='chip-dot';document.getElementById('chip-eeg').style.borderColor='var(--border)';}
-  if(ardInterval){clearInterval(ardInterval);ardInterval=null;fetch('/api/arduino/stop',{method:'POST'});document.getElementById('d-ard').className='chip-dot';document.getElementById('chip-ard').style.borderColor='var(--border)';}
-  hide('btn-live-stop');
-  document.getElementById('btn-live-start').disabled=false;
-  setLiveNote('Live result stopped.');
-}
-
-function startCam(){navigator.mediaDevices.getUserMedia({video:{width:640,height:480}}).then(s=>{stream=s;const v=document.getElementById('video');v.srcObject=s;v.style.display='block';hide('cam-ph');show('btn-cap');show('btn-stop');}).catch(e=>alert('Camera: '+e.message));}
-function stopCam(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}hide('video');hide('btn-cap');hide('btn-stop');show('cam-ph');}
-function capture(){const v=document.getElementById('video'),c=document.getElementById('canvas');c.width=v.videoWidth;c.height=v.videoHeight;c.getContext('2d').drawImage(v,0,0);c.toBlob(b=>{blob=b;const img=document.getElementById('snap-preview');img.src=URL.createObjectURL(b);img.style.display='block';hide('video');hide('btn-cap');hide('btn-stop');show('btn-ret');if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}},'image/jpeg',.95);}
-function retake(){blob=null;document.getElementById('snap-preview').style.display='none';hide('btn-ret');show('cam-ph');}
-document.addEventListener('keydown',e=>{if((e.key==='c'||e.key==='C')&&!document.getElementById('btn-cap').classList.contains('hidden'))capture();});
-function syncSlider(id,lblId,val,unit){document.getElementById(lblId).textContent=val+unit;const el=document.getElementById(id);const min=+el.min,max=+el.max;const pct=((+val-min)/(max-min)*100).toFixed(2)+'%';el.style.setProperty('--pct',pct);}
-['gsr','ppg','delta','theta','low_alpha','high_alpha','low_beta','high_beta','low_gamma','mid_gamma'].forEach(id=>{const el=document.getElementById(id);if(el)el.dispatchEvent(new Event('input'));});
-function show(id){document.getElementById(id)?.classList.remove('hidden')}
-function hide(id){document.getElementById(id)?.classList.add('hidden')}
-function updateSensorControls(values){SENSOR_IDS.forEach(id=>{if(values[id]===undefined||values[id]===null)return;const el=document.getElementById(id);if(!el)return;const n=Number(values[id]);el.value=n;const display=id==='gsr'||id==='ppg'?Math.round(n):n.toFixed(2);syncSlider(id,SENSOR_LABEL_IDS[id],display,id==='ppg'?' bpm':'');});}
-function setLiveNote(msg){const el=document.getElementById('live-result-note');if(!el)return;el.textContent=msg;if(msg)show('live-result-note');else hide('live-result-note');}
-function pct(v){return(v*100).toFixed(1)}
-const FILL_CLS=['pf-teal','pf-coral','pf-amber','pf-violet','pf-blue','pf-green'];
-function probBars(el,probs,cls){el.innerHTML='';Object.entries(probs).sort((a,b)=>b[1]-a[1]).forEach(([k,v],i)=>{const c=cls?cls[i%cls.length]:FILL_CLS[i%FILL_CLS.length];el.innerHTML+=`<div class="prob-row"><span class="prob-name">${k}</span><div class="prob-track"><div class="prob-fill ${c}" style="width:${pct(v)}%"></div></div><span class="prob-pct">${pct(v)}%</span></div>`;});}
-async function pollStatus(){try{const d=await(await fetch('/api/status')).json();const map={facial_cnn:'d-cnn',rnn_sensor:'d-rnn',predictor:'d-pred',scaler:'d-scaler',shap_bg:'d-shap'};for(const[k,id] of Object.entries(map)){const dot=document.getElementById(id);if(dot){dot.className='chip-dot '+(d.models[k]?'ok':'pulse');}}}catch(e){}}
-pollStatus();setInterval(pollStatus,30000);
-async function analyze(e){e.preventDefault();show('results');document.getElementById('spinner').style.display='flex';hide('res-content');const fd=new FormData();['gsr','ppg','delta','theta','low_alpha','high_alpha','low_beta','high_beta','low_gamma','mid_gamma'].forEach(id=>fd.append(id,document.getElementById(id).value));if(blob)fd.append('file',blob,'frame.jpg');try{const res=await fetch('/api/predict/complete',{method:'POST',body:fd});if(!res.ok){const err=await res.json();throw new Error(err.detail||'Server error');}renderResults(await res.json());}catch(err){alert('Assessment failed: '+err.message);}finally{document.getElementById('spinner').style.display='none';}}
-const STATE_ICONS={NORMAL:'✅',LOW_STRESS:'😌',MODERATE_STRESS:'😟',HIGH_ANXIETY:'😰',PANIC_STATE:'🆘',DEPRESSION:'💙'};
-const STATE_COLORS={NORMAL:'var(--green)',LOW_STRESS:'var(--blue)',MODERATE_STRESS:'var(--amber)',HIGH_ANXIETY:'var(--coral)',PANIC_STATE:'#ff2d55',DEPRESSION:'var(--violet)'};
-function renderResults(d,opts={}){
-  const s=d.sensor;
-  document.getElementById('state-label').textContent=s.state.replace(/_/g,' ');
-  document.getElementById('state-conf').textContent=pct(s.confidence)+'%';
-  document.getElementById('state-icon').textContent=STATE_ICONS[s.state]||'🧠';
-  probBars(document.getElementById('state-probs'),Object.fromEntries(Object.entries(s.probabilities).map(([k,v])=>[k.replace(/_/g,' '),v])),['pf-teal','pf-coral','pf-amber','pf-violet','pf-blue','pf-green']);
-  const tk=['gsr','ppg','delta','theta','low_alpha','high_alpha','low_beta','high_beta','low_gamma','mid_gamma'];
-  const tn=['GSR','PPG','Delta','Theta','Lo-α','Hi-α','Lo-β','Hi-β','Lo-γ','Mid-γ'];
-  const inp={};tk.forEach(k=>{inp[k]=+document.getElementById(k).value;});
-  const sg=document.getElementById('sensor-tiles');sg.innerHTML=tk.map((k,i)=>`<div class="stile"><div class="sval">${k==='gsr'?Math.round(inp[k]):parseFloat(inp[k]).toFixed(2)}</div><div class="slbl">${tn[i]}</div></div>`).join('');
-  if(d.facial){hide('no-facial');show('yes-facial');document.getElementById('emotion-label').textContent=d.facial.emotion;document.getElementById('emotion-conf').textContent=pct(d.facial.confidence)+'%';document.getElementById('emotion-icon').textContent={Angry:'😠',Disgust:'🤢',Fear:'😨',Happy:'😊',Neutral:'😐',Sad:'😢',Surprise:'😲'}[d.facial.emotion]||'😐';probBars(document.getElementById('emotion-probs'),d.facial.probabilities);if(d.gradcam&&d.gradcam.heatmap){show('gradcam-wrap');renderGradCam(d.gradcam.heatmap,d.gradcam.shape);}}else{show('no-facial');hide('yes-facial');hide('gradcam-wrap');}
-  renderTimeline(d.future,inp);
-  if(d.shap_sensor)renderShapSensor(d.shap_sensor);else document.getElementById('shap-sensor-content').innerHTML='<p style="color:var(--text3);font-size:.8rem">SHAP unavailable</p>';
-  if(d.shap_future)renderShapFuture(d.shap_future,d.future);else document.getElementById('shap-future-content').innerHTML='<p style="color:var(--text3);font-size:.8rem">SHAP unavailable</p>';
-  renderRec(d.recommendations);
-  show('res-content');if(opts.scroll!==false)document.getElementById('results').scrollIntoView({behavior:'smooth',block:'start'});
-}
-function renderTimeline(steps,currentInputs){
-  const keys=['gsr','ppg','delta','theta','low_alpha','high_alpha','low_beta','high_beta','low_gamma','mid_gamma'];
-  const labels=['GSR','PPG','Delta','Theta','Lo-α','Hi-α','Lo-β','Hi-β','Lo-γ','Mid-γ'];
-  const lastStep=steps[steps.length-1];
-  const cg=document.getElementById('change-summary');
-  cg.innerHTML=keys.map((k,i)=>{const curr=currentInputs[k];const futVal=lastStep[k]!==undefined?lastStep[k]:lastStep[k.replace('_','')];if(futVal===undefined)return '';const delta=futVal-curr;const pctChg=curr!==0?(delta/Math.abs(curr)*100).toFixed(1):0;const cls=Math.abs(pctChg)<2?'cv-fl':delta>0?'cv-up':'cv-dn';const arrow=Math.abs(pctChg)<2?'→':delta>0?'↑':'↓';return `<div class="change-tile"><div class="cv ${cls}">${arrow} ${Math.abs(pctChg)}%</div><div class="cl">${labels[i]}</div></div>`;}).join('');
-  const dot_cls={NORMAL:'dot-normal',LOW_STRESS:'dot-low',MODERATE_STRESS:'dot-stress',HIGH_ANXIETY:'dot-anxiety',PANIC_STATE:'dot-panic',DEPRESSION:'dot-depression'};
-  document.getElementById('timeline').innerHTML=steps.map(step=>{const dc=dot_cls[step.state]||'dot-normal';const col=STATE_COLORS[step.state]||'var(--text2)';const vals=Object.entries(step).filter(([k])=>!['step','state','state_index'].includes(k)).map(([k,v])=>`${k.toUpperCase().substring(0,3)}: ${typeof v==='number'?v.toFixed(2):v}`).slice(0,5).join('<br>');return `<div class="tl-step"><div class="tl-num">Step ${step.step}</div><div class="tl-dot ${dc}"></div><div class="tl-state" style="color:${col}">${step.state.replace(/_/g,' ')}</div><div class="tl-vals">${vals}</div></div>`;}).join('');
-}
-function renderShapSensor(shap){const el=document.getElementById('shap-sensor-content');el.innerHTML='';for(const[cls,feats] of Object.entries(shap)){const maxV=Math.max(...Object.values(feats));let rows='';Object.entries(feats).sort((a,b)=>b[1]-a[1]).forEach(([f,v])=>{const p=maxV>0?(v/maxV*100).toFixed(1):0;rows+=`<div class="shap-row"><span class="shap-name">${f}</span><div class="shap-track"><div class="shap-fill" style="width:${p}%"></div></div><span class="shap-val">${v.toFixed(4)}</span></div>`;});el.innerHTML+=`<div class="shap-block"><div class="shap-class-label">${cls.replace(/_/g,' ')}</div>${rows}</div>`;}}
-function renderShapFuture(shapData,futureSteps){const el=document.getElementById('shap-future-content');el.innerHTML='';const agg=shapData.aggregate_importance;const maxA=Math.max(...Object.values(agg));let aggHtml='<div class="shap-block"><div class="shap-class-label">Aggregate (all 5 steps)</div>';Object.entries(agg).sort((a,b)=>b[1]-a[1]).forEach(([f,v])=>{const p=maxA>0?(v/maxA*100).toFixed(1):0;aggHtml+=`<div class="shap-row"><span class="shap-name">${f}</span><div class="shap-track"><div class="shap-fill" style="width:${p}%;background:linear-gradient(to right,var(--teal-dim),var(--teal))"></div></div><span class="shap-val">${v.toFixed(4)}</span></div>`;});aggHtml+='</div>';el.innerHTML=aggHtml;shapData.per_step.forEach((stepData,i)=>{const state=(futureSteps&&futureSteps[i])?futureSteps[i].state.replace(/_/g,' '):'';const col=futureSteps&&futureSteps[i]?STATE_COLORS[futureSteps[i].state]:'var(--text2)';const maxS=Math.max(...Object.values(stepData.shap));let barHtml='';Object.entries(stepData.shap).sort((a,b)=>b[1]-a[1]).forEach(([f,v])=>{const p=maxS>0?(v/maxS*100).toFixed(1):0;barHtml+=`<div class="fshap-bar-row"><span class="fshap-name">${f}</span><div class="fshap-track"><div class="fshap-fill" style="width:${p}%"></div></div><span class="fshap-val">${v.toFixed(4)}</span></div>`;});el.innerHTML+=`<div class="fshap-step"><div class="fshap-head" onclick="toggleFshap(this)"><span class="fshap-step-label">Step ${stepData.step}</span><span class="fshap-state" style="color:${col}">${state}</span><span class="fshap-arrow">▼</span></div><div class="fshap-body">${barHtml}</div></div>`;});}
-function toggleFshap(head){head.classList.toggle('active');head.nextElementSibling.classList.toggle('open');}
-function renderGradCam(hm,shape){const canvas=document.getElementById('gradcam-canvas');canvas.style.display='block';const[H,W]=shape;canvas.width=W;canvas.height=H;const ctx=canvas.getContext('2d');const img=ctx.createImageData(W,H);for(let i=0;i<hm.length;i++){const v=hm[i];img.data[i*4]=Math.round(Math.min(255,v*2*255));img.data[i*4+1]=Math.round(Math.min(255,(1-Math.abs(v-.5)*2)*180));img.data[i*4+2]=Math.round(Math.min(255,(1-v)*2*255));img.data[i*4+3]=160;}ctx.putImageData(img,0,0);}
-function renderRec(r){const body=document.getElementById('rec-body');const tClass=r.trend==='worsening'?'trend-worsen':r.trend==='improving'?'trend-improve':'trend-stable';const tIcon=r.trend==='worsening'?'📉':r.trend==='improving'?'📈':'📊';let html=`<div class="trend-badge ${tClass}">${tIcon} ${r.trend_message}</div>`;if(r.emotion_tip)html+=`<div class="emotion-tip">${r.emotion_tip}</div>`;html+=`<div class="rec-section"><div class="rec-label">🚨 First Aid <span class="rec-tag tag-red">Immediate</span></div><ul class="rec-list rec-first-aid">${r.first_aid.map(i=>`<li>${i}</li>`).join('')}</ul></div>`;html+=`<div class="rec-section"><div class="rec-label">🌿 Lifestyle <span class="rec-tag tag-green">Daily</span></div><ul class="rec-list rec-lifestyle">${r.lifestyle.map(i=>`<li>${i}</li>`).join('')}</ul></div>`;html+=`<div class="rec-section"><div class="rec-label">🩺 Professional <span class="rec-tag tag-blue">When needed</span></div><ul class="rec-list rec-professional">${r.professional.map(i=>`<li>${i}</li>`).join('')}</ul></div>`;body.innerHTML=html;}
-</script>
-</body>
-</html>"""
 
 
 @app.get("/", response_class=HTMLResponse)

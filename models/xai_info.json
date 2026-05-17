@@ -1,0 +1,41 @@
+{
+  "sensor_xai": {
+    "type": "SHAP GradientExplainer",
+    "feature_names": [
+      "GSR",
+      "PPG",
+      "Delta",
+      "Theta",
+      "LowAlpha",
+      "HighAlpha",
+      "LowBeta",
+      "HighBeta",
+      "LowGamma",
+      "MidGamma"
+    ],
+    "sequence_len": 10,
+    "class_names": [
+      "NORMAL",
+      "LOW_STRESS",
+      "MODERATE_STRESS",
+      "HIGH_ANXIETY",
+      "PANIC_STATE",
+      "DEPRESSION"
+    ],
+    "model_available": true
+  },
+  "facial_xai": {
+    "type": "GradCAM",
+    "class_names": [
+      "angry",
+      "disgust",
+      "fear",
+      "happy",
+      "neutral",
+      "sad",
+      "surprise"
+    ],
+    "image_size": 48,
+    "model_available": true
+  }
+}

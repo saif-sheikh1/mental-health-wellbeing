@@ -1,0 +1,31 @@
+{
+  "training_date": "2026-05-17T17:04:34.828045",
+  "dataset": "mental_health_dataset_50000.csv",
+  "sensor_features": [
+    "GSR",
+    "PPG",
+    "Delta",
+    "Theta",
+    "LowAlpha",
+    "HighAlpha",
+    "LowBeta",
+    "HighBeta",
+    "LowGamma",
+    "MidGamma"
+  ],
+  "sensor_classes": [
+    "NORMAL",
+    "LOW_STRESS",
+    "MODERATE_STRESS",
+    "HIGH_ANXIETY",
+    "PANIC_STATE",
+    "DEPRESSION"
+  ],
+  "models": {
+    "facial": "facial_cnn_model.keras (Residual CNN)",
+    "sensor": "rnn_sensor_model.keras (BiLSTM+GRU+Attention)",
+    "predictor": "future_predictor_model.keras (Seq2Seq BiLSTM)"
+  },
+  "sequence_len": 10,
+  "forecast_horizon": 5
+}

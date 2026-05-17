@@ -32,3 +32,4 @@ pydantic
 matplotlib
 seaborn
 tqdm
+pyserial
