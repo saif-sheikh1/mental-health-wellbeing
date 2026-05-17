@@ -1,0 +1,2133 @@
+# """
+# MENTAL HEALTH ASSESSMENT - ADVANCED TRAINING SCRIPT
+# =====================================================
+# Features:
+# - RNN (LSTM/GRU) for temporal/sequential sensor data
+# - Vision Transformer (ViT) for facial expression recognition
+# - XAI (SHAP + GradCAM) for model explainability
+# - Future state prediction (next N steps forecasting)
+# - Target accuracy: 85%+
+#
+# FIXES APPLIED:
+# - UnicodeEncodeError: all file writes now use encoding='utf-8'
+# - ViT custom layer loading in deploy_server uses correct custom_objects
+# - deploy_server FASTAPI_CODE emoji characters preserved via UTF-8
+# - Decoder LSTM state shape mismatch fixed (state_h/c projected to 128-dim)
+# - Minor: SMOTE edge-case guard improved
+#
+# USAGE:
+# 1. pip install tensorflow scikit-learn pandas numpy pillow opencv-python
+#        imbalanced-learn shap tf-keras-vis fastapi uvicorn python-multipart scipy
+# 2. python train_models_advanced.py
+# 3. python deploy_server.py  (after training)
+# """
+#
+# import os
+# import sys
+# import re
+# import json
+# import glob
+# import pickle
+# import warnings
+# import numpy as np
+# import pandas as pd
+# import tensorflow as tf
+# from datetime import datetime
+# from tensorflow import keras
+# from tensorflow.keras import layers, regularizers
+# from tensorflow.keras.callbacks import (
+#     EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
+# )
+# from tensorflow.keras.preprocessing.image import ImageDataGenerator
+# from sklearn.preprocessing import RobustScaler
+# from sklearn.model_selection import train_test_split
+# from sklearn.metrics import (
+#     classification_report, accuracy_score
+# )
+# from imblearn.over_sampling import SMOTE
+# import cv2
+#
+# # ============================= CONFIGURATION =============================
+#
+# BASE_PATH = r"D:\fyp\prediction model"
+#
+# THRESHOLD_DATA_PATH = os.path.join(BASE_PATH, "stress_mental_health_dataset_updated.csv")
+# SENSOR_DATA_PATH    = os.path.join(BASE_PATH, "mental_health_multimodal.csv")
+#
+# FACIAL_PATHS = {
+#     'angry':    os.path.join(BASE_PATH, "train", "angry"),
+#     'disgust':  os.path.join(BASE_PATH, "train", "disgust"),
+#     'fear':     os.path.join(BASE_PATH, "train", "fear"),
+#     'happy':    os.path.join(BASE_PATH, "train", "happy"),
+#     'neutral':  os.path.join(BASE_PATH, "train", "neutral"),
+#     'sad':      os.path.join(BASE_PATH, "train", "sad"),
+#     'surprise': os.path.join(BASE_PATH, "train", "surprise"),
+# }
+#
+# MODEL_DIR = os.path.join(BASE_PATH, "models")
+# os.makedirs(MODEL_DIR, exist_ok=True)
+#
+# # Training hyper-parameters
+# VIT_EPOCHS        = 1
+# RNN_EPOCHS        = 1
+# PRED_EPOCHS       = 1
+# BATCH_SIZE        = 3
+# LEARNING_RATE     = 0.0001
+# IMG_SIZE          = 48        # Facial image size (48x48)
+# PATCH_SIZE        = 8         # ViT patch size
+# NUM_HEADS         = 4         # ViT attention heads
+# TRANSFORMER_UNITS = [128, 64]
+# SEQUENCE_LEN      = 10        # Time-steps for RNN
+# FORECAST_HORIZON  = 5         # Steps ahead to predict
+#
+# # Column mappings
+# SENSOR_COLUMNS = {
+#     'gsr':       'GSR_VALUE',
+#     'ppg':       'PPG_Value',
+#     'eeg_alpha': 'EEG_Alpha_Power',
+#     'eeg_beta':  'EEG_Beta_Power',
+#     'eeg_gamma': 'EEG_Gamma_Power',
+# }
+# THRESHOLD_COLUMNS = {
+#     'gsr':       'GSR',
+#     'ppg':       'PPG',
+#     'eeg_alpha': 'EEG Alpha',
+#     'eeg_beta':  'EEG Beta',
+#     'eeg_gamma': 'EEG Gamma',
+# }
+# STATE_NAMES = ['Low Activity', 'Normal', 'High Stress']
+#
+# # =========================================================================
+#
+# os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+# tf.get_logger().setLevel('ERROR')
+# warnings.filterwarnings('ignore')
+#
+# print("\n" + "=" * 80)
+# print("MENTAL HEALTH ASSESSMENT -- ADVANCED MODEL TRAINING")
+# print("    Modules: Vision Transformer | RNN-LSTM | XAI | Future Prediction")
+# print("=" * 80 + "\n")
+#
+#
+# # ======================== UTILITY FUNCTIONS ========================
+#
+# def safe_float_convert(value):
+#     if pd.isna(value):
+#         return np.nan
+#     if isinstance(value, (int, float)):
+#         return float(value)
+#     s = str(value).strip()
+#     s = re.sub(r'[µ%A-Za-z]', '', s).strip()
+#     if '-' in s and not s.startswith('-'):
+#         parts = s.split('-')
+#         if len(parts) == 2:
+#             try:
+#                 return (float(parts[0]) + float(parts[1])) / 2.0
+#             except Exception:
+#                 pass
+#     nums = re.findall(r'-?\d+\.?\d*', s)
+#     if nums:
+#         try:
+#             return float(nums[0])
+#         except Exception:
+#             pass
+#     return np.nan
+#
+#
+# def get_default_thresholds():
+#     return {
+#         'gsr':       {'normal_min': 2.0,  'normal_max': 15.0},
+#         'ppg':       {'normal_min': 60,   'normal_max': 100},
+#         'eeg_alpha': {'normal_min': 8.0,  'normal_max': 13.0},
+#         'eeg_beta':  {'normal_min': 13.0, 'normal_max': 30.0},
+#         'eeg_gamma': {'normal_min': 30.0, 'normal_max': 80.0},
+#     }
+#
+#
+# def load_threshold_data():
+#     print("Loading thresholds...")
+#     if not os.path.exists(THRESHOLD_DATA_PATH):
+#         print("   WARNING: File missing - using defaults")
+#         return get_default_thresholds()
+#     try:
+#         df = pd.read_csv(THRESHOLD_DATA_PATH, dtype=str, low_memory=False)
+#         required = list(THRESHOLD_COLUMNS.values())
+#         if not all(c in df.columns for c in required):
+#             print("   WARNING: Missing columns - using defaults")
+#             return get_default_thresholds()
+#         for col in required:
+#             df[col] = df[col].apply(safe_float_convert)
+#         df = df.dropna(subset=required)
+#         if len(df) < 10:
+#             return get_default_thresholds()
+#         thresholds = {}
+#         for key, col in THRESHOLD_COLUMNS.items():
+#             thresholds[key] = {
+#                 'normal_min': float(df[col].quantile(0.25)),
+#                 'normal_max': float(df[col].quantile(0.75)),
+#             }
+#         print(f"   Loaded from {len(df)} samples\n")
+#         return thresholds
+#     except Exception as e:
+#         print(f"   WARNING: Error: {e} - using defaults")
+#         return get_default_thresholds()
+#
+#
+# def clean_sensor_data(df):
+#     print("Cleaning sensor data...")
+#     initial = len(df)
+#     df = df.drop_duplicates().dropna()
+#     cols = list(SENSOR_COLUMNS.values())
+#     for col in cols:
+#         Q1, Q3 = df[col].quantile(0.25), df[col].quantile(0.75)
+#         IQR = Q3 - Q1
+#         df = df[(df[col] >= Q1 - 3 * IQR) & (df[col] <= Q3 + 3 * IQR)]
+#     df = df[df[SENSOR_COLUMNS['gsr']] >= 0]
+#     df = df[(df[SENSOR_COLUMNS['ppg']] >= 40) & (df[SENSOR_COLUMNS['ppg']] <= 200)]
+#     df = df[(df[SENSOR_COLUMNS['eeg_alpha']] >= 0) & (df[SENSOR_COLUMNS['eeg_alpha']] <= 50)]
+#     df = df[(df[SENSOR_COLUMNS['eeg_beta']] >= 0) & (df[SENSOR_COLUMNS['eeg_beta']] <= 100)]
+#     df = df[(df[SENSOR_COLUMNS['eeg_gamma']] >= 0) & (df[SENSOR_COLUMNS['eeg_gamma']] <= 200)]
+#     print(f"   Removed {initial - len(df)} rows -> {len(df)} clean samples\n")
+#     return df
+#
+#
+# def assign_state(row, thresholds):
+#     weights = {'gsr': 1.5, 'ppg': 1.3, 'eeg_alpha': 1.0, 'eeg_beta': 1.2, 'eeg_gamma': 1.0}
+#     scores = []
+#     for sensor, col in SENSOR_COLUMNS.items():
+#         v = row[col]
+#         t = thresholds[sensor]
+#         if v < t['normal_min']:
+#             scores.append(-(t['normal_min'] - v) / t['normal_min'] * weights[sensor])
+#         elif v > t['normal_max']:
+#             scores.append((v - t['normal_max']) / t['normal_max'] * weights[sensor])
+#         else:
+#             scores.append(0)
+#     avg = sum(scores) / sum(weights.values())
+#     return 2 if avg > 0.12 else (0 if avg < -0.12 else 1)
+#
+#
+# # ======================== VISION TRANSFORMER (ViT) ========================
+#
+# class Patches(layers.Layer):
+#     def __init__(self, patch_size, **kwargs):
+#         super().__init__(**kwargs)
+#         self.patch_size = patch_size
+#
+#     def call(self, images):
+#         batch = tf.shape(images)[0]
+#         patches = tf.image.extract_patches(
+#             images=images,
+#             sizes=[1, self.patch_size, self.patch_size, 1],
+#             strides=[1, self.patch_size, self.patch_size, 1],
+#             rates=[1, 1, 1, 1],
+#             padding='VALID',
+#         )
+#         dim = patches.shape[-1]
+#         patches = tf.reshape(patches, [batch, -1, dim])
+#         return patches
+#
+#     def get_config(self):
+#         cfg = super().get_config()
+#         cfg.update({'patch_size': self.patch_size})
+#         return cfg
+#
+#
+# class PatchEncoder(layers.Layer):
+#     def __init__(self, num_patches, projection_dim, **kwargs):
+#         super().__init__(**kwargs)
+#         self.num_patches    = num_patches
+#         self.projection_dim = projection_dim
+#         self.projection     = layers.Dense(projection_dim)
+#         self.pos_embedding  = layers.Embedding(num_patches, projection_dim)
+#
+#     def call(self, patches):
+#         positions = tf.range(start=0, limit=self.num_patches, delta=1)
+#         return self.projection(patches) + self.pos_embedding(positions)
+#
+#     def get_config(self):
+#         cfg = super().get_config()
+#         cfg.update({'num_patches': self.num_patches,
+#                     'projection_dim': self.projection_dim})
+#         return cfg
+#
+#
+# def mlp_block(x, hidden_units, dropout_rate):
+#     for units in hidden_units:
+#         x = layers.Dense(units, activation=tf.nn.gelu)(x)
+#         x = layers.Dropout(dropout_rate)(x)
+#     return x
+#
+#
+# def create_vit_model(num_classes=7):
+#     num_patches     = (IMG_SIZE // PATCH_SIZE) ** 2
+#     projection_dim  = 64
+#     num_heads       = NUM_HEADS
+#     transformer_units = TRANSFORMER_UNITS
+#     num_transformer_layers = 6
+#     mlp_head_units  = [256, 128]
+#
+#     inputs = keras.Input(shape=(IMG_SIZE, IMG_SIZE, 1))
+#     # Convert grayscale to 3-channel for patch extraction consistency
+#     x = layers.Conv2D(3, 1, padding='same')(inputs)
+#
+#     patches     = Patches(PATCH_SIZE)(x)
+#     encoded     = PatchEncoder(num_patches, projection_dim)(patches)
+#
+#     for _ in range(num_transformer_layers):
+#         x1 = layers.LayerNormalization(epsilon=1e-6)(encoded)
+#         attn = layers.MultiHeadAttention(
+#             num_heads=num_heads, key_dim=projection_dim // num_heads, dropout=0.1
+#         )(x1, x1)
+#         x2   = layers.Add()([attn, encoded])
+#         x3   = layers.LayerNormalization(epsilon=1e-6)(x2)
+#         x3   = mlp_block(x3, transformer_units, dropout_rate=0.1)
+#         encoded = layers.Add()([x3, x2])
+#
+#     representation = layers.LayerNormalization(epsilon=1e-6)(encoded)
+#     representation = layers.Flatten()(representation)
+#     representation = layers.Dropout(0.4)(representation)
+#
+#     features = mlp_block(representation, mlp_head_units, dropout_rate=0.3)
+#     outputs  = layers.Dense(num_classes, activation='softmax')(features)
+#
+#     model = keras.Model(inputs, outputs, name='ViT_Facial')
+#     model.compile(
+#         optimizer=keras.optimizers.AdamW(learning_rate=LEARNING_RATE, weight_decay=1e-4),
+#         loss='sparse_categorical_crossentropy',
+#         metrics=['accuracy'],
+#     )
+#     return model
+#
+#
+# def train_facial_vit():
+#     print("\n" + "=" * 80)
+#     print("TRAINING FACIAL MODEL -- Vision Transformer (ViT)")
+#     print("=" * 80 + "\n")
+#
+#     images, labels = [], []
+#     for idx, (emotion, path) in enumerate(FACIAL_PATHS.items()):
+#         if not os.path.exists(path):
+#             print(f"   WARNING: Missing: {path}")
+#             continue
+#         count = 0
+#         for img_file in glob.glob(os.path.join(path, "*.*")):
+#             try:
+#                 img = cv2.imread(img_file, cv2.IMREAD_GRAYSCALE)
+#                 if img is None:
+#                     continue
+#                 img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
+#                 img = cv2.equalizeHist(img)
+#                 img = cv2.GaussianBlur(img, (3, 3), 0)
+#                 images.append(img.astype(np.float32) / 255.0)
+#                 labels.append(idx)
+#                 count += 1
+#             except Exception:
+#                 continue
+#         print(f"   {emotion}: {count} images")
+#
+#     if len(images) < 100:
+#         print("ERROR: Insufficient facial data")
+#         return None
+#
+#     X = np.array(images).reshape(-1, IMG_SIZE, IMG_SIZE, 1)
+#     y = np.array(labels)
+#     print(f"\nTotal: {len(X)} images\n")
+#
+#     X_train, X_test, y_train, y_test = train_test_split(
+#         X, y, test_size=0.15, random_state=42, stratify=y
+#     )
+#
+#     datagen = ImageDataGenerator(
+#         rotation_range=25,
+#         width_shift_range=0.2,
+#         height_shift_range=0.2,
+#         horizontal_flip=True,
+#         zoom_range=0.2,
+#         shear_range=0.15,
+#         brightness_range=[0.8, 1.2],
+#         fill_mode='nearest',
+#     )
+#     datagen.fit(X_train)
+#
+#     model = create_vit_model(num_classes=len(FACIAL_PATHS))
+#
+#     callbacks = [
+#         EarlyStopping(monitor='val_accuracy', patience=15, restore_best_weights=True, min_delta=0.001),
+#         ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=6, min_lr=1e-7),
+#         ModelCheckpoint(os.path.join(MODEL_DIR, 'vit_best.keras'),
+#                         monitor='val_accuracy', save_best_only=True),
+#     ]
+#
+#     print(f"Training: {len(X_train)} | Validation: {len(X_test)}")
+#     print(f"Epochs: {VIT_EPOCHS}, Batch: {BATCH_SIZE}\n")
+#
+#     history = model.fit(
+#         datagen.flow(X_train, y_train, batch_size=BATCH_SIZE),
+#         validation_data=(X_test, y_test),
+#         epochs=VIT_EPOCHS,
+#         callbacks=callbacks,
+#         verbose=1,
+#     )
+#
+#     y_pred = np.argmax(model.predict(X_test, verbose=0), axis=1)
+#     acc = accuracy_score(y_test, y_pred)
+#     print(f"\nFacial (ViT) Accuracy: {acc * 100:.2f}%")
+#     print(classification_report(y_test, y_pred,
+#                                 target_names=list(FACIAL_PATHS.keys()),
+#                                 zero_division=0))
+#
+#     # FIX: save in native Keras format to avoid HDF5 legacy warnings
+#     model.save(os.path.join(MODEL_DIR, 'vit_facial_model.keras'))
+#     print(f"Saved -> {MODEL_DIR}/vit_facial_model.keras\n")
+#     return model
+#
+#
+# # ======================== RNN-LSTM SENSOR MODEL ========================
+#
+# def build_sequences(X, y, seq_len):
+#     """Slide a window over rows to create (seq_len, features) sequences."""
+#     Xs, ys = [], []
+#     for i in range(len(X) - seq_len):
+#         Xs.append(X[i:i + seq_len])
+#         ys.append(y[i + seq_len])
+#     return np.array(Xs), np.array(ys)
+#
+#
+# def create_rnn_sensor_model(seq_len, n_features, num_classes=3):
+#     """Bidirectional LSTM + GRU + Attention for sensor classification."""
+#     inputs = keras.Input(shape=(seq_len, n_features))
+#
+#     # Bidirectional LSTM branch
+#     x = layers.Bidirectional(layers.LSTM(128, return_sequences=True,
+#                                           kernel_regularizer=regularizers.l2(0.001)))(inputs)
+#     x = layers.BatchNormalization()(x)
+#     x = layers.Dropout(0.3)(x)
+#
+#     x = layers.Bidirectional(layers.LSTM(64, return_sequences=True,
+#                                           kernel_regularizer=regularizers.l2(0.001)))(x)
+#     x = layers.BatchNormalization()(x)
+#
+#     # GRU branch for complementary temporal features
+#     g = layers.GRU(64, return_sequences=True,
+#                    kernel_regularizer=regularizers.l2(0.001))(inputs)
+#     g = layers.BatchNormalization()(g)
+#     g = layers.Dropout(0.3)(g)
+#
+#     combined = layers.Concatenate()([x, g])
+#
+#     # Self-attention over time
+#     attn_out = layers.MultiHeadAttention(num_heads=4, key_dim=32, dropout=0.1)(combined, combined)
+#     attn_out = layers.LayerNormalization(epsilon=1e-6)(attn_out + combined)
+#
+#     pooled = layers.GlobalAveragePooling1D()(attn_out)
+#
+#     z = layers.Dense(256, activation='relu', kernel_regularizer=regularizers.l2(0.001))(pooled)
+#     z = layers.BatchNormalization()(z)
+#     z = layers.Dropout(0.4)(z)
+#
+#     z = layers.Dense(128, activation='relu', kernel_regularizer=regularizers.l2(0.001))(z)
+#     z = layers.Dropout(0.3)(z)
+#
+#     outputs = layers.Dense(num_classes, activation='softmax')(z)
+#
+#     model = keras.Model(inputs, outputs, name='RNN_Sensor')
+#     model.compile(
+#         optimizer=keras.optimizers.Adam(LEARNING_RATE),
+#         loss='sparse_categorical_crossentropy',
+#         metrics=['accuracy'],
+#     )
+#     return model
+#
+#
+# def train_rnn_sensor():
+#     print("\n" + "=" * 80)
+#     print("TRAINING SENSOR MODEL -- Bidirectional LSTM + GRU + Attention")
+#     print("=" * 80 + "\n")
+#
+#     thresholds = load_threshold_data()
+#
+#     if not os.path.exists(SENSOR_DATA_PATH):
+#         print(f"ERROR: Not found: {SENSOR_DATA_PATH}")
+#         return None, None
+#
+#     cols = list(SENSOR_COLUMNS.values())
+#     df   = pd.read_csv(SENSOR_DATA_PATH, usecols=cols,
+#                        dtype={c: np.float32 for c in cols})
+#     print(f"Loaded {len(df)} rows")
+#
+#     df = clean_sensor_data(df)
+#
+#     print("Assigning mental-health states...")
+#     df['state'] = df.apply(lambda row: assign_state(row, thresholds), axis=1)
+#
+#     X_raw = df[cols].values
+#     y_raw = df['state'].values
+#
+#     unique, counts = np.unique(y_raw, return_counts=True)
+#     print("\nClass distribution:")
+#     for s, c in zip(unique, counts):
+#         print(f"   State {s} ({STATE_NAMES[s]}): {c}  ({c / len(y_raw) * 100:.1f}%)")
+#
+#     if len(unique) < 2:
+#         print("ERROR: Need >= 2 classes")
+#         return None, None
+#
+#     # Scale before sequencing
+#     scaler = RobustScaler()
+#     X_scaled = scaler.fit_transform(X_raw)
+#
+#     # Build sequences
+#     X_seq, y_seq = build_sequences(X_scaled, y_raw, SEQUENCE_LEN)
+#     print(f"\nSequences: {X_seq.shape}  ({X_seq.shape[0]} samples x {SEQUENCE_LEN} steps x {X_seq.shape[2]} features)")
+#
+#     # SMOTE on flattened sequences
+#     n_samples, seq_len, n_feat = X_seq.shape
+#     X_flat = X_seq.reshape(n_samples, seq_len * n_feat)
+#
+#     # FIX: guard against edge-case where a class has only 1 sample
+#     min_count = np.bincount(y_seq).min()
+#     if min_count < 2:
+#         print("WARNING: A class has < 2 samples; skipping SMOTE for this run.")
+#         X_bal, y_bal = X_flat, y_seq
+#     else:
+#         k_neighbors = min(5, min_count - 1)
+#         smote = SMOTE(random_state=42, k_neighbors=k_neighbors)
+#         X_flat_bal, y_bal = smote.fit_resample(X_flat, y_seq)
+#         X_bal = X_flat_bal.reshape(-1, seq_len, n_feat)
+#         print(f"After SMOTE: {len(X_bal)} samples\n")
+#
+#     X_bal = X_bal.reshape(-1, seq_len, n_feat)
+#
+#     X_train, X_test, y_train, y_test = train_test_split(
+#         X_bal, y_bal, test_size=0.15, random_state=42, stratify=y_bal
+#     )
+#
+#     model = create_rnn_sensor_model(seq_len=SEQUENCE_LEN, n_features=len(cols))
+#
+#     callbacks = [
+#         EarlyStopping(monitor='val_accuracy', patience=15, restore_best_weights=True, min_delta=0.001),
+#         ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=7, min_lr=1e-7),
+#         ModelCheckpoint(os.path.join(MODEL_DIR, 'rnn_sensor_best.keras'),
+#                         monitor='val_accuracy', save_best_only=True),
+#     ]
+#
+#     print(f"Training: {len(X_train)} | Validation: {len(X_test)}")
+#     print(f"Epochs: {RNN_EPOCHS}, Batch: {BATCH_SIZE}\n")
+#
+#     model.fit(X_train, y_train,
+#               validation_data=(X_test, y_test),
+#               epochs=RNN_EPOCHS,
+#               batch_size=BATCH_SIZE,
+#               callbacks=callbacks,
+#               verbose=1)
+#
+#     y_pred = np.argmax(model.predict(X_test, verbose=0), axis=1)
+#     acc = accuracy_score(y_test, y_pred)
+#     print(f"\nSensor (RNN) Accuracy: {acc * 100:.2f}%")
+#     print(classification_report(y_test, y_pred, target_names=STATE_NAMES, zero_division=0))
+#
+#     # FIX: save in native Keras format
+#     model.save(os.path.join(MODEL_DIR, 'rnn_sensor_model.keras'))
+#     with open(os.path.join(MODEL_DIR, 'scaler.pkl'), 'wb') as f:
+#         pickle.dump(scaler, f)
+#     with open(os.path.join(MODEL_DIR, 'thresholds.pkl'), 'wb') as f:
+#         pickle.dump(thresholds, f)
+#     print(f"Saved -> {MODEL_DIR}/rnn_sensor_model.keras\n")
+#
+#     return model, scaler
+#
+#
+# # ======================== FUTURE PREDICTION MODEL (Seq2Seq LSTM) ========================
+#
+# def create_prediction_model(seq_len, n_features, forecast_horizon):
+#     """
+#     Encoder-Decoder LSTM for multi-step future sensor value prediction.
+#     Input  : (seq_len, n_features)
+#     Output : (forecast_horizon, n_features) -- predicted future sensor readings
+#
+#     FIX: Bidirectional encoder produces state_h of size 64*2=128.
+#          Decoder LSTM units set to 128 to match; state_c also projected to 128.
+#     """
+#     encoder_inputs = keras.Input(shape=(seq_len, n_features), name='encoder_input')
+#
+#     # Encoder
+#     e = layers.Bidirectional(layers.LSTM(128, return_sequences=True,
+#                                           kernel_regularizer=regularizers.l2(0.001)))(encoder_inputs)
+#     e = layers.BatchNormalization()(e)
+#     e = layers.Dropout(0.3)(e)
+#
+#     # Return state from bidirectional LSTM; fwd+bwd h/c are each 64 -> concat to 128
+#     _, fwd_h, fwd_c, bwd_h, bwd_c = layers.Bidirectional(
+#         layers.LSTM(64, return_state=True,
+#                     kernel_regularizer=regularizers.l2(0.001))
+#     )(e)
+#     state_h = layers.Concatenate()([fwd_h, bwd_h])   # shape: (batch, 128)
+#     state_c = layers.Concatenate()([fwd_c, bwd_c])   # shape: (batch, 128)
+#
+#     # Decoder: repeat the context vector for forecast_horizon steps
+#     decoder_inputs = layers.RepeatVector(forecast_horizon)(state_h)
+#
+#     # FIX: decoder LSTM units = 128 to match state_h/c dimensions
+#     d = layers.LSTM(128, return_sequences=True)(decoder_inputs,
+#                                                 initial_state=[state_h, state_c])
+#     d = layers.BatchNormalization()(d)
+#     d = layers.Dropout(0.3)(d)
+#     d = layers.LSTM(64, return_sequences=True)(d)
+#
+#     # Attention over encoder output
+#     # e has shape (batch, seq_len, 256) from first BiLSTM; project to 64 for compatibility
+#     e_proj = layers.TimeDistributed(layers.Dense(64))(e)
+#     attn = layers.MultiHeadAttention(num_heads=4, key_dim=16)(d, e_proj)
+#     d = layers.Add()([d, attn])
+#     d = layers.LayerNormalization(epsilon=1e-6)(d)
+#
+#     outputs = layers.TimeDistributed(layers.Dense(n_features))(d)
+#
+#     model = keras.Model(encoder_inputs, outputs, name='FuturePredictor')
+#     model.compile(optimizer=keras.optimizers.Adam(LEARNING_RATE),
+#                   loss='mse', metrics=['mae'])
+#     return model
+#
+#
+# def train_future_prediction():
+#     print("\n" + "=" * 80)
+#     print("TRAINING FUTURE PREDICTION MODEL -- Seq2Seq LSTM")
+#     print("=" * 80 + "\n")
+#
+#     if not os.path.exists(SENSOR_DATA_PATH):
+#         print(f"ERROR: Not found: {SENSOR_DATA_PATH}")
+#         return None
+#
+#     scaler_path = os.path.join(MODEL_DIR, 'scaler.pkl')
+#     if not os.path.exists(scaler_path):
+#         print("WARNING: Scaler not found - train RNN sensor model first")
+#         return None
+#
+#     with open(scaler_path, 'rb') as f:
+#         scaler = pickle.load(f)
+#
+#     cols = list(SENSOR_COLUMNS.values())
+#     df   = pd.read_csv(SENSOR_DATA_PATH, usecols=cols,
+#                        dtype={c: np.float32 for c in cols})
+#     thresholds = load_threshold_data()
+#     df = clean_sensor_data(df)
+#     df['state'] = df.apply(lambda row: assign_state(row, thresholds), axis=1)
+#
+#     X_scaled = scaler.transform(df[cols].values)
+#     n_features = len(cols)
+#
+#     # Build X: seq_len steps in, y: next forecast_horizon steps out
+#     total_len = SEQUENCE_LEN + FORECAST_HORIZON
+#     X_pred, y_pred_arr = [], []
+#     for i in range(len(X_scaled) - total_len):
+#         X_pred.append(X_scaled[i:i + SEQUENCE_LEN])
+#         y_pred_arr.append(X_scaled[i + SEQUENCE_LEN:i + total_len])
+#
+#     X_pred = np.array(X_pred)
+#     y_pred_arr = np.array(y_pred_arr)
+#     print(f"Prediction samples: {X_pred.shape}")
+#
+#     X_tr, X_te, y_tr, y_te = train_test_split(X_pred, y_pred_arr, test_size=0.15, random_state=42)
+#
+#     model = create_prediction_model(SEQUENCE_LEN, n_features, FORECAST_HORIZON)
+#
+#     callbacks = [
+#         EarlyStopping(monitor='val_loss', patience=12, restore_best_weights=True),
+#         ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-7),
+#         ModelCheckpoint(os.path.join(MODEL_DIR, 'predictor_best.keras'),
+#                         monitor='val_loss', save_best_only=True),
+#     ]
+#
+#     print(f"Training: {len(X_tr)} | Validation: {len(X_te)}")
+#     print(f"Epochs: {PRED_EPOCHS}, Batch: {BATCH_SIZE}\n")
+#
+#     model.fit(X_tr, y_tr,
+#               validation_data=(X_te, y_te),
+#               epochs=PRED_EPOCHS,
+#               batch_size=BATCH_SIZE,
+#               callbacks=callbacks,
+#               verbose=1)
+#
+#     loss, mae = model.evaluate(X_te, y_te, verbose=0)
+#     print(f"\nPrediction MAE: {mae:.4f}")
+#
+#     # FIX: save in native Keras format
+#     model.save(os.path.join(MODEL_DIR, 'future_predictor_model.keras'))
+#     print(f"Saved -> {MODEL_DIR}/future_predictor_model.keras\n")
+#     return model
+#
+#
+# # ======================== XAI -- SHAP + GRAD-CAM ========================
+#
+# def setup_xai(sensor_model, vit_model, scaler):
+#     """
+#     Save XAI artefacts:
+#     - SHAP explainer info (sensor/RNN model)
+#     - GradCAM helper info (ViT - last dense layer target)
+#     """
+#     print("\n" + "=" * 80)
+#     print("SETTING UP XAI (SHAP + GradCAM metadata)")
+#     print("=" * 80 + "\n")
+#
+#     xai_info = {
+#         'sensor_xai': {
+#             'type': 'SHAP DeepExplainer',
+#             'feature_names': list(SENSOR_COLUMNS.keys()),
+#             'sequence_len': SEQUENCE_LEN,
+#             'class_names': STATE_NAMES,
+#         },
+#         'facial_xai': {
+#             'type': 'GradCAM',
+#             'target_layer': 'dense',
+#             'class_names': list(FACIAL_PATHS.keys()),
+#             'image_size': IMG_SIZE,
+#         },
+#         'instructions': (
+#             "At inference time use shap.GradientExplainer(sensor_model, background) "
+#             "to generate SHAP values. For ViT GradCAM, compute gradients of the "
+#             "predicted class score w.r.t. the patch embeddings."
+#         ),
+#     }
+#
+#     # FIX: explicit UTF-8 encoding to avoid UnicodeEncodeError on Windows
+#     with open(os.path.join(MODEL_DIR, 'xai_info.json'), 'w', encoding='utf-8') as f:
+#         json.dump(xai_info, f, indent=2)
+#
+#     print("   XAI metadata saved -> models/xai_info.json")
+#     print("   SHAP GradientExplainer & GradCAM are applied at inference in deploy_server.py\n")
+#
+#
+# # ======================== FASTAPI DEPLOYMENT SCRIPT ========================
+#
+# FASTAPI_CODE = '''"""
+# MENTAL HEALTH ASSESSMENT - FastAPI Deployment Server
+# =====================================================
+# Endpoints:
+#   POST /predict/sensor      - classify current mental state from sensor readings
+#   POST /predict/facial      - classify emotion from a grayscale face image
+#   POST /predict/future      - forecast future sensor values + mental states
+#   POST /explain/sensor      - SHAP feature importances for sensor prediction
+#   POST /explain/facial      - GradCAM heatmap for ViT facial prediction
+#   GET  /health              - liveness check
+# """
+#
+# import os
+# import io
+# import json
+# import pickle
+# import warnings
+# import numpy as np
+# import shap
+#
+# import uvicorn
+# from fastapi import FastAPI, UploadFile, File, HTTPException
+# from fastapi.responses import JSONResponse
+# from pydantic import BaseModel
+# from typing import List, Optional
+#
+# import tensorflow as tf
+# from tensorflow import keras
+# import cv2
+# from PIL import Image
+#
+# warnings.filterwarnings("ignore")
+#
+# # ---- Config ----------------------------------------------------------------
+# BASE_PATH  = r"D:\\fyp\\prediction model"
+# MODEL_DIR  = os.path.join(BASE_PATH, "models")
+# IMG_SIZE   = 48
+# SEQ_LEN    = 10
+# N_FEATURES = 5
+# STATE_NAMES   = ["Low Activity", "Normal", "High Stress"]
+# EMOTION_NAMES = ["angry", "disgust", "fear", "happy", "neutral", "sad", "surprise"]
+#
+#
+# # ---- Custom ViT layers (required for loading the saved model) --------------
+# import re as _re
+# import tensorflow as tf as _tf
+#
+# class Patches(keras.layers.Layer):
+#     def __init__(self, patch_size, **kwargs):
+#         super().__init__(**kwargs)
+#         self.patch_size = patch_size
+#
+#     def call(self, images):
+#         batch = _tf.shape(images)[0]
+#         patches = _tf.image.extract_patches(
+#             images=images,
+#             sizes=[1, self.patch_size, self.patch_size, 1],
+#             strides=[1, self.patch_size, self.patch_size, 1],
+#             rates=[1, 1, 1, 1],
+#             padding="VALID",
+#         )
+#         dim = patches.shape[-1]
+#         patches = _tf.reshape(patches, [batch, -1, dim])
+#         return patches
+#
+#     def get_config(self):
+#         cfg = super().get_config()
+#         cfg.update({"patch_size": self.patch_size})
+#         return cfg
+#
+#
+# class PatchEncoder(keras.layers.Layer):
+#     def __init__(self, num_patches, projection_dim, **kwargs):
+#         super().__init__(**kwargs)
+#         self.num_patches    = num_patches
+#         self.projection_dim = projection_dim
+#         self.projection     = keras.layers.Dense(projection_dim)
+#         self.pos_embedding  = keras.layers.Embedding(num_patches, projection_dim)
+#
+#     def call(self, patches):
+#         positions = _tf.range(start=0, limit=self.num_patches, delta=1)
+#         return self.projection(patches) + self.pos_embedding(positions)
+#
+#     def get_config(self):
+#         cfg = super().get_config()
+#         cfg.update({"num_patches": self.num_patches,
+#                     "projection_dim": self.projection_dim})
+#         return cfg
+#
+#
+# CUSTOM_OBJECTS = {"Patches": Patches, "PatchEncoder": PatchEncoder}
+#
+# # ---- Load artefacts --------------------------------------------------------
+# print("Loading models...")
+# vit_model       = keras.models.load_model(
+#     os.path.join(MODEL_DIR, "vit_facial_model.keras"),
+#     custom_objects=CUSTOM_OBJECTS,
+#     compile=False,
+# )
+# rnn_model       = keras.models.load_model(
+#     os.path.join(MODEL_DIR, "rnn_sensor_model.keras"),
+#     compile=False,
+# )
+# predictor_model = keras.models.load_model(
+#     os.path.join(MODEL_DIR, "future_predictor_model.keras"),
+#     compile=False,
+# )
+#
+# with open(os.path.join(MODEL_DIR, "scaler.pkl"), "rb") as f:
+#     scaler = pickle.load(f)
+# with open(os.path.join(MODEL_DIR, "thresholds.pkl"), "rb") as f:
+#     thresholds = pickle.load(f)
+#
+# print("All models loaded successfully")
+#
+# # ---- FastAPI app -----------------------------------------------------------
+# app = FastAPI(title="Mental Health Assessment API", version="2.0")
+#
+#
+# # ---- Schemas ---------------------------------------------------------------
+# class SensorReading(BaseModel):
+#     gsr: float
+#     ppg: float
+#     eeg_alpha: float
+#     eeg_beta: float
+#     eeg_gamma: float
+#
+# class SensorSequence(BaseModel):
+#     """10 consecutive sensor readings (list of SensorReading)."""
+#     readings: List[SensorReading]
+#
+# class FutureRequest(BaseModel):
+#     readings: List[SensorReading]       # exactly SEQ_LEN readings
+#     steps_ahead: Optional[int] = 5
+#
+#
+# # ---- Helpers ---------------------------------------------------------------
+# def readings_to_array(readings: List[SensorReading]) -> np.ndarray:
+#     arr = np.array([[r.gsr, r.ppg, r.eeg_alpha, r.eeg_beta, r.eeg_gamma]
+#                     for r in readings], dtype=np.float32)
+#     return arr
+#
+#
+# def build_sequence_input(arr: np.ndarray) -> np.ndarray:
+#     scaled = scaler.transform(arr)
+#     return scaled.reshape(1, len(arr), arr.shape[1])
+#
+#
+# # ---- Endpoints -------------------------------------------------------------
+# @app.get("/health")
+# def health():
+#     return {"status": "ok", "models": ["vit_facial", "rnn_sensor", "future_predictor"]}
+#
+#
+# @app.post("/predict/sensor")
+# def predict_sensor(seq: SensorSequence):
+#     arr = readings_to_array(seq.readings[-SEQ_LEN:])
+#     if len(arr) < SEQ_LEN:
+#         raise HTTPException(400, f"Need exactly {SEQ_LEN} readings")
+#     x = build_sequence_input(arr)
+#     probs = rnn_model.predict(x, verbose=0)[0]
+#     state_idx = int(np.argmax(probs))
+#     return {
+#         "state_index":       state_idx,
+#         "state_label":       STATE_NAMES[state_idx],
+#         "confidence":        float(probs[state_idx]),
+#         "probabilities":     {STATE_NAMES[i]: float(p) for i, p in enumerate(probs)},
+#     }
+#
+#
+# @app.post("/predict/facial")
+# async def predict_facial(file: UploadFile = File(...)):
+#     data  = await file.read()
+#     img   = Image.open(io.BytesIO(data)).convert("L").resize((IMG_SIZE, IMG_SIZE))
+#     arr   = np.array(img, dtype=np.float32) / 255.0
+#     arr   = arr.reshape(1, IMG_SIZE, IMG_SIZE, 1)
+#     probs = vit_model.predict(arr, verbose=0)[0]
+#     idx   = int(np.argmax(probs))
+#     return {
+#         "emotion_index":  idx,
+#         "emotion_label":  EMOTION_NAMES[idx],
+#         "confidence":     float(probs[idx]),
+#         "probabilities":  {EMOTION_NAMES[i]: float(p) for i, p in enumerate(probs)},
+#     }
+#
+#
+# @app.post("/predict/future")
+# def predict_future(req: FutureRequest):
+#     arr = readings_to_array(req.readings[-SEQ_LEN:])
+#     if len(arr) < SEQ_LEN:
+#         raise HTTPException(400, f"Need at least {SEQ_LEN} readings")
+#     x = build_sequence_input(arr)
+#     forecast_scaled = predictor_model.predict(x, verbose=0)[0]   # (horizon, n_feat)
+#     forecast_raw    = scaler.inverse_transform(forecast_scaled)
+#
+#     # Derive predicted mental-health state for each forecast step
+#     future_states = []
+#     for step_vals in forecast_raw:
+#         vals = step_vals.tolist()
+#         scores = []
+#         keys    = ["gsr", "ppg", "eeg_alpha", "eeg_beta", "eeg_gamma"]
+#         weights = [1.5, 1.3, 1.0, 1.2, 1.0]
+#         for i, key in enumerate(keys):
+#             t = thresholds[key]
+#             v = vals[i]
+#             if v < t["normal_min"]:
+#                 scores.append(-(t["normal_min"] - v) / t["normal_min"] * weights[i])
+#             elif v > t["normal_max"]:
+#                 scores.append((v - t["normal_max"]) / t["normal_max"] * weights[i])
+#             else:
+#                 scores.append(0)
+#         avg = sum(scores) / sum(weights)
+#         s = 2 if avg > 0.12 else (0 if avg < -0.12 else 1)
+#         future_states.append({
+#             "gsr":             round(vals[0], 3),
+#             "ppg":             round(vals[1], 3),
+#             "eeg_alpha":       round(vals[2], 3),
+#             "eeg_beta":        round(vals[3], 3),
+#             "eeg_gamma":       round(vals[4], 3),
+#             "predicted_state": STATE_NAMES[s],
+#             "state_index":     s,
+#         })
+#
+#     return {"forecast_horizon": len(future_states), "future_steps": future_states}
+#
+#
+# @app.post("/explain/sensor")
+# def explain_sensor(seq: SensorSequence):
+#     """Return SHAP values for each feature at each time step."""
+#     arr = readings_to_array(seq.readings[-SEQ_LEN:])
+#     x   = build_sequence_input(arr)
+#
+#     # GradientExplainer works on all TF/Keras models including RNNs
+#     background = np.zeros((1, SEQ_LEN, N_FEATURES), dtype=np.float32)
+#     explainer  = shap.GradientExplainer(rnn_model, background)
+#     shap_vals  = explainer.shap_values(x)  # list of arrays per class
+#
+#     feature_names = ["gsr", "ppg", "eeg_alpha", "eeg_beta", "eeg_gamma"]
+#     result = {}
+#     for class_idx, class_sv in enumerate(shap_vals):
+#         mean_shap = np.mean(np.abs(class_sv[0]), axis=0).tolist()
+#         result[STATE_NAMES[class_idx]] = {
+#             feature_names[i]: round(mean_shap[i], 6) for i in range(len(feature_names))
+#         }
+#     return {"shap_values": result}
+#
+#
+# @app.post("/explain/facial")
+# async def explain_facial(file: UploadFile = File(...)):
+#     """Return GradCAM heatmap (as flat list) for ViT prediction."""
+#     data   = await file.read()
+#     img    = Image.open(io.BytesIO(data)).convert("L").resize((IMG_SIZE, IMG_SIZE))
+#     arr    = np.array(img, dtype=np.float32) / 255.0
+#     inp    = arr.reshape(1, IMG_SIZE, IMG_SIZE, 1)
+#
+#     probs      = vit_model.predict(inp, verbose=0)[0]
+#     pred_class = int(np.argmax(probs))
+#
+#     # Approximate GradCAM via gradient of predicted-class score w.r.t. input
+#     inp_tensor = tf.constant(inp)
+#     with tf.GradientTape() as tape:
+#         tape.watch(inp_tensor)
+#         preds = vit_model(inp_tensor)
+#         score = preds[:, pred_class]
+#     grads    = tape.gradient(score, inp_tensor)[0, :, :, 0].numpy()
+#     heatmap  = np.maximum(grads, 0)
+#     heatmap /= (heatmap.max() + 1e-8)
+#
+#     return {
+#         "emotion":          EMOTION_NAMES[pred_class],
+#         "confidence":       float(probs[pred_class]),
+#         "gradcam_heatmap":  heatmap.flatten().tolist(),
+#         "heatmap_shape":    list(heatmap.shape),
+#     }
+#
+#
+# if __name__ == "__main__":
+#     uvicorn.run(app, host="0.0.0.0", port=8000)
+# '''
+#
+# # ======================== MAIN ========================
+#
+# def main():
+#     start = datetime.now()
+#
+#     print("Checking file availability:")
+#     print(f"   Threshold CSV : {'OK' if os.path.exists(THRESHOLD_DATA_PATH) else 'MISSING'}")
+#     print(f"   Sensor CSV    : {'OK' if os.path.exists(SENSOR_DATA_PATH) else 'MISSING'}")
+#     available = sum(1 for p in FACIAL_PATHS.values() if os.path.exists(p))
+#     print(f"   Facial folders: {available}/{len(FACIAL_PATHS)}\n")
+#
+#     try:
+#         # 1. Vision Transformer -- facial emotion
+#         vit_model = train_facial_vit()
+#
+#         # 2. RNN Sensor -- current mental state
+#         rnn_model, scaler = train_rnn_sensor()
+#
+#         # 3. Future Prediction -- seq2seq forecasting
+#         predictor = train_future_prediction()
+#
+#         # 4. XAI artefacts
+#         if rnn_model and vit_model:
+#             setup_xai(rnn_model, vit_model, scaler)
+#
+#         # 5. Metadata
+#         metadata = {
+#             'training_date':    datetime.now().isoformat(),
+#             'models': {
+#                 'facial':    'vit_facial_model.keras   (Vision Transformer)',
+#                 'sensor':    'rnn_sensor_model.keras   (Bidirectional LSTM + GRU + Attention)',
+#                 'predictor': 'future_predictor_model.keras  (Seq2Seq LSTM)',
+#             },
+#             'xai': {
+#                 'sensor': 'SHAP GradientExplainer',
+#                 'facial': 'GradCAM (gradient w.r.t. input)',
+#             },
+#             'sequence_len':     SEQUENCE_LEN,
+#             'forecast_horizon': FORECAST_HORIZON,
+#             'sensor_columns':   SENSOR_COLUMNS,
+#             'target_accuracy':  '>=85%',
+#         }
+#         # FIX: explicit UTF-8 encoding
+#         with open(os.path.join(MODEL_DIR, 'metadata.json'), 'w', encoding='utf-8') as f:
+#             json.dump(metadata, f, indent=2)
+#
+#         # 6. Write deploy_server.py
+#         deploy_path = os.path.join(BASE_PATH, 'deploy_server.py')
+#         # FIX: explicit UTF-8 encoding to prevent UnicodeEncodeError on Windows (cp1252)
+#         with open(deploy_path, 'w', encoding='utf-8') as f:
+#             f.write(FASTAPI_CODE)
+#         print(f"deploy_server.py written -> {deploy_path}\n")
+#
+#         # State info
+#         state_info = {'state_names': STATE_NAMES, 'num_classes': 3, 'class_labels': [0, 1, 2]}
+#         with open(os.path.join(MODEL_DIR, 'state_info.pkl'), 'wb') as f:
+#             pickle.dump(state_info, f)
+#
+#         duration = (datetime.now() - start).total_seconds()
+#         print("\n" + "=" * 80)
+#         print("TRAINING COMPLETE")
+#         print("=" * 80)
+#         print(f"Total time  : {duration:.1f}s  ({duration / 60:.1f} min)")
+#         print(f"Models saved: {os.path.abspath(MODEL_DIR)}/")
+#         print("\nFiles produced:")
+#         for fname in [
+#             'vit_facial_model.keras',
+#             'rnn_sensor_model.keras',
+#             'future_predictor_model.keras',
+#             'scaler.pkl',
+#             'thresholds.pkl',
+#             'state_info.pkl',
+#             'xai_info.json',
+#             'metadata.json',
+#         ]:
+#             mark = 'OK' if os.path.exists(os.path.join(MODEL_DIR, fname)) else 'MISSING'
+#             print(f"   [{mark}]  {fname}")
+#
+#         print("\n  Run deployment server:")
+#         print(f"   cd \"{BASE_PATH}\"")
+#         print("   python deploy_server.py")
+#         print("\n  API will be available at  http://localhost:8000")
+#         print("   Swagger docs              http://localhost:8000/docs")
+#         print("=" * 80 + "\n")
+#
+#     except Exception as e:
+#         import traceback
+#         print(f"\nFATAL ERROR: {e}")
+#         traceback.print_exc()
+#         sys.exit(1)
+#
+#
+# if __name__ == "__main__":
+#     main()
+"""
+Mental Health Assessment FastAPI Server — Advanced Edition
+==========================================================
+Models: Vision Transformer (ViT) | Bidirectional LSTM+GRU | Seq2Seq Future Predictor
+XAI   : SHAP GradientExplainer  | GradCAM
+UI    : Full-featured single-page app with webcam, sensor inputs, future timeline,
+        XAI visualisation, and AI recommendation system
+
+Run:
+    pip install -r requirements.txt
+    python deploy_server.py
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import os
+import pickle
+import warnings
+from datetime import datetime
+from typing import Dict, List, Optional
+
+import cv2
+import numpy as np
+import shap
+import uvicorn
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse
+from PIL import Image
+from pydantic import BaseModel, Field
+
+import tensorflow as tf
+from tensorflow import keras
+
+warnings.filterwarnings("ignore")
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+tf.get_logger().setLevel("ERROR")
+
+# ──────────────────────────── CONFIG ────────────────────────────
+BASE_PATH = r"D:\fyp\prediction model"
+MODEL_DIR = os.path.join(BASE_PATH, "models")
+
+IMG_SIZE         = 48
+SEQ_LEN          = 10
+N_FEATURES       = 5
+FORECAST_HORIZON = 5
+
+STATE_NAMES   = ["Low Activity", "Normal", "High Stress"]
+EMOTION_NAMES = ["Angry", "Disgust", "Fear", "Happy", "Neutral", "Sad", "Surprise"]
+FEATURE_NAMES = ["GSR", "PPG", "EEG Alpha", "EEG Beta", "EEG Gamma"]
+
+# ──────────────────────────── CUSTOM LAYERS ─────────────────────
+class Patches(keras.layers.Layer):
+    def __init__(self, patch_size, **kw):
+        super().__init__(**kw)
+        self.patch_size = patch_size
+
+    def call(self, images):
+        b = tf.shape(images)[0]
+        p = tf.image.extract_patches(
+            images, sizes=[1, self.patch_size, self.patch_size, 1],
+            strides=[1, self.patch_size, self.patch_size, 1],
+            rates=[1, 1, 1, 1], padding="VALID")
+        return tf.reshape(p, [b, -1, p.shape[-1]])
+
+    def get_config(self):
+        c = super().get_config()
+        c["patch_size"] = self.patch_size
+        return c
+
+
+class PatchEncoder(keras.layers.Layer):
+    def __init__(self, num_patches, projection_dim, **kw):
+        super().__init__(**kw)
+        self.num_patches    = num_patches
+        self.projection_dim = projection_dim
+        self.projection     = keras.layers.Dense(projection_dim)
+        self.pos_embedding  = keras.layers.Embedding(num_patches, projection_dim)
+
+    def call(self, patches):
+        pos = tf.range(0, self.num_patches, 1)
+        return self.projection(patches) + self.pos_embedding(pos)
+
+    def get_config(self):
+        c = super().get_config()
+        c.update({"num_patches": self.num_patches, "projection_dim": self.projection_dim})
+        return c
+
+
+CUSTOM_OBJECTS = {"Patches": Patches, "PatchEncoder": PatchEncoder}
+
+# ──────────────────────────── MODEL MANAGER ─────────────────────
+class ModelManager:
+    def __init__(self):
+        self.vit_model       = None
+        self.rnn_model       = None
+        self.predictor_model = None
+        self.scaler          = None
+        self.thresholds      = None
+        self.status: Dict[str, bool] = {
+            "vit_facial": False,
+            "rnn_sensor": False,
+            "predictor":  False,
+            "scaler":     False,
+            "thresholds": False,
+        }
+
+    # ── loaders ──────────────────────────────────────────────────
+    def load(self):
+        print("\n" + "═" * 60)
+        print("  Loading Models…")
+        print("═" * 60)
+
+        # ── ViT Facial model
+        # Training saves as .keras (native format); fall back to .h5 for compatibility
+        vit_paths = [
+            os.path.join(MODEL_DIR, "vit_facial_model.keras"),
+            os.path.join(MODEL_DIR, "vit_facial_model.h5"),
+            os.path.join(MODEL_DIR, "vit_best.keras"),         # best checkpoint
+        ]
+        for path in vit_paths:
+            if os.path.exists(path):
+                try:
+                    self.vit_model = keras.models.load_model(
+                        path,
+                        custom_objects=CUSTOM_OBJECTS,
+                        compile=False,
+                    )
+                    self.status["vit_facial"] = True
+                    print(f"  ✅  vit_model  ({os.path.basename(path)})")
+                    break
+                except Exception as e:
+                    print(f"  ❌  vit_model  ({os.path.basename(path)}): {e}")
+        else:
+            if not self.status["vit_facial"]:
+                print("  ⚠️   vit_model: not found (checked .keras / .h5 / vit_best.keras)")
+
+        # ── RNN Sensor model
+        rnn_paths = [
+            os.path.join(MODEL_DIR, "rnn_sensor_model.keras"),
+            os.path.join(MODEL_DIR, "rnn_sensor_model.h5"),
+            os.path.join(MODEL_DIR, "rnn_sensor_best.keras"),  # best checkpoint
+        ]
+        for path in rnn_paths:
+            if os.path.exists(path):
+                try:
+                    self.rnn_model = keras.models.load_model(path, compile=False)
+                    self.status["rnn_sensor"] = True
+                    print(f"  ✅  rnn_model  ({os.path.basename(path)})")
+                    break
+                except Exception as e:
+                    print(f"  ❌  rnn_model  ({os.path.basename(path)}): {e}")
+        else:
+            if not self.status["rnn_sensor"]:
+                print("  ⚠️   rnn_model: not found (checked .keras / .h5 / rnn_sensor_best.keras)")
+
+        # ── Future Predictor model
+        pred_paths = [
+            os.path.join(MODEL_DIR, "future_predictor_model.keras"),
+            os.path.join(MODEL_DIR, "future_predictor_model.h5"),
+            os.path.join(MODEL_DIR, "predictor_best.keras"),   # best checkpoint
+        ]
+        for path in pred_paths:
+            if os.path.exists(path):
+                try:
+                    self.predictor_model = keras.models.load_model(path, compile=False)
+                    self.status["predictor"] = True
+                    print(f"  ✅  predictor_model  ({os.path.basename(path)})")
+                    break
+                except Exception as e:
+                    print(f"  ❌  predictor_model  ({os.path.basename(path)}): {e}")
+        else:
+            if not self.status["predictor"]:
+                print("  ⚠️   predictor_model: not found")
+
+        # ── Scaler & Thresholds (pickles — unchanged)
+        for attr, fname, key in [
+            ("scaler",     "scaler.pkl",     "scaler"),
+            ("thresholds", "thresholds.pkl", "thresholds"),
+        ]:
+            p = os.path.join(MODEL_DIR, fname)
+            if os.path.exists(p):
+                try:
+                    with open(p, "rb") as f:
+                        setattr(self, attr, pickle.load(f))
+                    self.status[key] = True
+                    print(f"  ✅  {attr}")
+                except Exception as e:
+                    print(f"  ❌  {attr}: {e}")
+            else:
+                print(f"  ⚠️   {attr}: not found at {p}")
+
+        print("═" * 60 + "\n")
+
+    # ── helpers ──────────────────────────────────────────────────
+    def _assign_state(self, vals: List[float]) -> int:
+        if not self.thresholds:
+            return 1
+        keys    = ["gsr", "ppg", "eeg_alpha", "eeg_beta", "eeg_gamma"]
+        weights = [1.5, 1.3, 1.0, 1.2, 1.0]
+        scores  = []
+        for i, key in enumerate(keys):
+            t = self.thresholds[key]
+            v = vals[i]
+            if v < t["normal_min"]:
+                scores.append(-(t["normal_min"] - v) / t["normal_min"] * weights[i])
+            elif v > t["normal_max"]:
+                scores.append((v - t["normal_max"]) / t["normal_max"] * weights[i])
+            else:
+                scores.append(0)
+        avg = sum(scores) / sum(weights)
+        return 2 if avg > 0.12 else (0 if avg < -0.12 else 1)
+
+    # ── facial ───────────────────────────────────────────────────
+    def predict_facial(self, image_bytes: bytes) -> Dict:
+        if not self.vit_model:
+            raise HTTPException(503, "ViT facial model not loaded")
+        img = Image.open(io.BytesIO(image_bytes)).convert("L").resize((IMG_SIZE, IMG_SIZE))
+        arr = np.array(img, dtype=np.float32) / 255.0
+        arr = cv2.equalizeHist((arr * 255).astype(np.uint8)).astype(np.float32) / 255.0
+        arr = arr.reshape(1, IMG_SIZE, IMG_SIZE, 1)
+        probs = self.vit_model.predict(arr, verbose=0)[0]
+        idx   = int(np.argmax(probs))
+        return {
+            "emotion":       EMOTION_NAMES[idx],
+            "confidence":    float(probs[idx]),
+            "probabilities": {EMOTION_NAMES[i]: float(p) for i, p in enumerate(probs)},
+        }
+
+    # ── sensor (single point → padded sequence) ──────────────────
+    def predict_sensor_single(self, vals: List[float]) -> Dict:
+        if not self.rnn_model or not self.scaler:
+            raise HTTPException(503, "RNN sensor model not loaded")
+        arr    = np.array([vals] * SEQ_LEN, dtype=np.float32)
+        scaled = self.scaler.transform(arr).reshape(1, SEQ_LEN, N_FEATURES)
+        probs  = self.rnn_model.predict(scaled, verbose=0)[0]
+        idx    = int(np.argmax(probs))
+        return {
+            "state":         STATE_NAMES[idx],
+            "state_index":   idx,
+            "confidence":    float(probs[idx]),
+            "probabilities": {STATE_NAMES[i]: float(p) for i, p in enumerate(probs)},
+        }
+
+    # ── future prediction ─────────────────────────────────────────
+    def predict_future(self, vals: List[float]) -> List[Dict]:
+        if not self.predictor_model or not self.scaler:
+            raise HTTPException(503, "Predictor model not loaded")
+        arr    = np.array([vals] * SEQ_LEN, dtype=np.float32)
+        scaled = self.scaler.transform(arr).reshape(1, SEQ_LEN, N_FEATURES)
+        fc_sc  = self.predictor_model.predict(scaled, verbose=0)[0]
+        fc_raw = self.scaler.inverse_transform(fc_sc)
+        out = []
+        for step_i, sv in enumerate(fc_raw):
+            state_idx = self._assign_state(sv.tolist())
+            out.append({
+                "step":        step_i + 1,
+                "gsr":         round(float(sv[0]), 3),
+                "ppg":         round(float(sv[1]), 3),
+                "eeg_alpha":   round(float(sv[2]), 3),
+                "eeg_beta":    round(float(sv[3]), 3),
+                "eeg_gamma":   round(float(sv[4]), 3),
+                "state":       STATE_NAMES[state_idx],
+                "state_index": state_idx,
+            })
+        return out
+
+    # ── SHAP explanation ─────────────────────────────────────────
+    def explain_shap(self, vals: List[float]) -> Dict:
+        if not self.rnn_model or not self.scaler:
+            raise HTTPException(503, "RNN sensor model not loaded")
+        arr    = np.array([vals] * SEQ_LEN, dtype=np.float32)
+        scaled = self.scaler.transform(arr).reshape(1, SEQ_LEN, N_FEATURES)
+        bg     = np.zeros((1, SEQ_LEN, N_FEATURES), dtype=np.float32)
+        exp    = shap.GradientExplainer(self.rnn_model, bg)
+        sv     = exp.shap_values(scaled)
+        result = {}
+        for ci, class_sv in enumerate(sv):
+            mean_abs = np.mean(np.abs(class_sv[0]), axis=0).tolist()
+            result[STATE_NAMES[ci]] = {
+                FEATURE_NAMES[i]: round(mean_abs[i], 6) for i in range(N_FEATURES)
+            }
+        return result
+
+    # ── GradCAM ──────────────────────────────────────────────────
+    def gradcam(self, image_bytes: bytes) -> Dict:
+        if not self.vit_model:
+            raise HTTPException(503, "ViT facial model not loaded")
+        img = Image.open(io.BytesIO(image_bytes)).convert("L").resize((IMG_SIZE, IMG_SIZE))
+        arr = np.array(img, dtype=np.float32) / 255.0
+        arr = cv2.equalizeHist((arr * 255).astype(np.uint8)).astype(np.float32) / 255.0
+        inp = tf.constant(arr.reshape(1, IMG_SIZE, IMG_SIZE, 1))
+        with tf.GradientTape() as tape:
+            tape.watch(inp)
+            preds      = self.vit_model(inp)
+            pred_class = int(tf.argmax(preds[0]))
+            score      = preds[:, pred_class]
+        grads   = tape.gradient(score, inp)[0, :, :, 0].numpy()
+        heatmap = np.maximum(grads, 0)
+        heatmap /= (heatmap.max() + 1e-8)
+        return {
+            "emotion": EMOTION_NAMES[pred_class],
+            "heatmap": heatmap.flatten().tolist(),
+            "shape":   list(heatmap.shape),
+        }
+
+    # ── recommendations ──────────────────────────────────────────
+    def recommendations(self, state: str, emotion: str, future_states: List[str]) -> Dict:
+        state_nums = [STATE_NAMES.index(s) if s in STATE_NAMES else 1 for s in future_states]
+        trend = (
+            "worsening" if (len(state_nums) >= 2 and state_nums[-1] > state_nums[0]) else
+            "improving" if (len(state_nums) >= 2 and state_nums[-1] < state_nums[0]) else
+            "stable"
+        )
+
+        first_aid, lifestyle, professional = [], [], []
+
+        if state == "High Stress":
+            first_aid = [
+                "🫁 Box breathing: inhale 4s → hold 4s → exhale 4s → hold 4s. Repeat ×4",
+                "🖐️ 5-4-3-2-1 grounding — name 5 things you see, 4 you feel, 3 you hear",
+                "💧 Drink a glass of cold water slowly",
+                "🚶 Step outside for 2–3 minutes if possible",
+                "🎧 Put on calm music at low volume",
+            ]
+            lifestyle = [
+                "📵 Set a screen-time limit of 30 min for the next 2 hours",
+                "🛏️ Aim for 7–9 hours of sleep tonight",
+                "🏃 30 min moderate exercise tomorrow morning",
+                "📓 Journal your stressors for 5 minutes before bed",
+            ]
+            professional = [
+                "🩺 If High Stress persists > 3 days, consult a licensed therapist",
+                "📋 Consider a cortisol/hormonal check with your GP",
+            ]
+        elif state == "Low Activity":
+            first_aid = [
+                "☕ Hydrate — drink 250 ml water right now",
+                "💡 Increase ambient light (open blinds or turn on lights)",
+                "🕺 Do 20 jumping jacks or a 2-min stretch",
+                "🍎 Eat a light snack with protein if you haven't eaten recently",
+            ]
+            lifestyle = [
+                "🌅 Try a consistent wake-up time to regulate circadian rhythm",
+                "🏋️ Add 3 sessions of moderate exercise per week",
+                "🥗 Review diet — increase complex carbs and iron-rich foods",
+            ]
+            professional = [
+                "🩺 Persistent low energy may indicate thyroid issues — consider bloodwork",
+                "💊 Discuss with your doctor if symptoms last > 2 weeks",
+            ]
+        else:
+            first_aid = ["✅ Current state is balanced — maintain your routine!"]
+            lifestyle = [
+                "🧘 Keep up mindfulness or light meditation daily",
+                "🏃 30 min activity 3–4 ×/week maintains this balance",
+            ]
+            professional = ["💬 Routine check-in with your healthcare provider every 6 months"]
+
+        emotion_tips = {
+            "Angry":    "😤 Anger spike detected — try splashing cold water on your face",
+            "Sad":      "💙 Sadness noted — reach out to a trusted friend or family member",
+            "Fear":     "🛡️ Anxiety visible — 4-7-8 breathing can calm the nervous system quickly",
+            "Disgust":  "😣 Negative affect detected — brief physical reset (walk/stretch) helps",
+            "Happy":    "😊 Great emotional state! Anchor this feeling with a short gratitude note",
+            "Surprise": "😲 Heightened arousal — pause and assess your environment",
+            "Neutral":  "😐 Calm baseline — good time for focused work or planning",
+        }
+
+        trend_msg = {
+            "worsening": "⚠️ Sensor forecast shows a worsening trajectory — proactive intervention recommended",
+            "improving": "📈 Good news: forecast shows improving physiological trends",
+            "stable":    "📊 Physiological forecast is stable over the next 5 readings",
+        }
+
+        return {
+            "trend":         trend,
+            "trend_message": trend_msg[trend],
+            "first_aid":     first_aid,
+            "emotion_tip":   emotion_tips.get(emotion, ""),
+            "lifestyle":     lifestyle,
+            "professional":  professional,
+        }
+
+
+# ──────────────────────────── APP INIT ──────────────────────────
+app = FastAPI(title="MindSense AI", version="2.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+mgr = ModelManager()
+
+
+@app.on_event("startup")
+async def startup():
+    mgr.load()
+
+
+# ──────────────────────────── SCHEMAS ────────────────────────────
+class SensorInput(BaseModel):
+    gsr:       float = Field(..., ge=0,  le=100,  description="µS")
+    ppg:       float = Field(..., ge=40, le=200,  description="bpm")
+    eeg_alpha: float = Field(..., ge=0,  le=50)
+    eeg_beta:  float = Field(..., ge=0,  le=100)
+    eeg_gamma: float = Field(..., ge=0,  le=200)
+
+
+# ──────────────────────────── API ENDPOINTS ──────────────────────
+@app.get("/api/status")
+def status():
+    return {
+        "status":    "online",
+        "models":    mgr.status,
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
+@app.post("/api/predict/facial")
+async def api_facial(file: UploadFile = File(...)):
+    return mgr.predict_facial(await file.read())
+
+
+@app.post("/api/predict/sensor")
+def api_sensor(s: SensorInput):
+    return mgr.predict_sensor_single([s.gsr, s.ppg, s.eeg_alpha, s.eeg_beta, s.eeg_gamma])
+
+
+@app.post("/api/predict/future")
+def api_future(s: SensorInput):
+    return {"forecast": mgr.predict_future([s.gsr, s.ppg, s.eeg_alpha, s.eeg_beta, s.eeg_gamma])}
+
+
+@app.post("/api/explain/shap")
+def api_shap(s: SensorInput):
+    return {"shap": mgr.explain_shap([s.gsr, s.ppg, s.eeg_alpha, s.eeg_beta, s.eeg_gamma])}
+
+
+@app.post("/api/explain/gradcam")
+async def api_gradcam(file: UploadFile = File(...)):
+    return mgr.gradcam(await file.read())
+
+
+@app.post("/api/predict/complete")
+async def api_complete(
+    gsr:       float = Form(...),
+    ppg:       float = Form(...),
+    eeg_alpha: float = Form(...),
+    eeg_beta:  float = Form(...),
+    eeg_gamma: float = Form(...),
+    file: Optional[UploadFile] = File(None),
+):
+    vals        = [gsr, ppg, eeg_alpha, eeg_beta, eeg_gamma]
+    sensor_res  = mgr.predict_sensor_single(vals)
+    future_res  = mgr.predict_future(vals)
+    future_states = [f["state"] for f in future_res]
+
+    facial_res  = None
+    gradcam_res = None
+    if file and file.filename:
+        content = await file.read()
+        if content:
+            try:
+                facial_res  = mgr.predict_facial(content)
+                gradcam_res = mgr.gradcam(content)
+            except Exception:
+                pass
+
+    emotion = facial_res["emotion"] if facial_res else "Neutral"
+    recs    = mgr.recommendations(sensor_res["state"], emotion, future_states)
+
+    shap_res = None
+    try:
+        shap_res = mgr.explain_shap(vals)
+    except Exception:
+        pass
+
+    return {
+        "sensor":          sensor_res,
+        "facial":          facial_res,
+        "future":          future_res,
+        "shap":            shap_res,
+        "gradcam":         gradcam_res,
+        "recommendations": recs,
+        "timestamp":       datetime.now().isoformat(),
+    }
+
+
+# ──────────────────────────── HTML UI ────────────────────────────
+HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MindSense AI — Mental Health Assessment</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#0a0e1a;--paper:#f4f1eb;--teal:#00b4a6;--coral:#ff6b5b;
+  --amber:#f5a623;--violet:#7c3aed;--green:#10b981;
+  --card:#ffffff;--border:#e2ddd4;--muted:#6b7280;
+  --shadow:0 4px 24px rgba(10,14,26,.08);
+  --r:16px;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{font-family:'DM Sans',sans-serif;background:var(--paper);color:var(--ink);min-height:100vh}
+header{
+  background:var(--ink);color:var(--paper);
+  padding:24px 40px;display:flex;align-items:center;justify-content:space-between;
+  position:sticky;top:0;z-index:100;
+}
+.logo{font-family:'Syne',sans-serif;font-weight:800;font-size:1.5rem;letter-spacing:-.02em}
+.logo span{color:var(--teal)}
+.status-chips{display:flex;gap:10px;flex-wrap:wrap}
+.chip{
+  display:flex;align-items:center;gap:6px;
+  padding:5px 12px;border-radius:999px;font-size:.75rem;font-weight:500;
+  background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12)
+}
+.dot{width:7px;height:7px;border-radius:50%;background:#ef4444}
+.dot.ok{background:var(--teal)}
+.dot.pulse{animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+main{max-width:1440px;margin:0 auto;padding:40px}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+.grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+@media(max-width:1100px){.grid-2{grid-template-columns:1fr}.grid-3{grid-template-columns:1fr 1fr}}
+@media(max-width:680px){.grid-3{grid-template-columns:1fr}}
+section{margin-bottom:36px}
+.card{
+  background:var(--card);border-radius:var(--r);
+  border:1.5px solid var(--border);box-shadow:var(--shadow);overflow:hidden
+}
+.card-head{
+  padding:20px 24px;border-bottom:1.5px solid var(--border);
+  display:flex;align-items:center;gap:12px
+}
+.card-head h2{font-family:'Syne',sans-serif;font-size:1rem;font-weight:700}
+.card-icon{
+  width:36px;height:36px;border-radius:10px;
+  display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0
+}
+.ci-teal{background:#e0faf8}
+.ci-coral{background:#fff0ee}
+.ci-amber{background:#fef8ec}
+.ci-violet{background:#f3f0ff}
+.ci-green{background:#ecfdf5}
+.card-body{padding:24px}
+#video{width:100%;border-radius:10px;background:#0a0e1a;display:none;aspect-ratio:4/3;object-fit:cover}
+#canvas{display:none}
+#snap-preview{width:100%;border-radius:10px;display:none;border:2px solid var(--teal)}
+.cam-overlay{
+  aspect-ratio:4/3;background:var(--ink);border-radius:10px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:10px;color:var(--paper);font-size:.9rem;cursor:pointer
+}
+.cam-overlay svg{width:48px;opacity:.4}
+.field{margin-bottom:18px}
+.field label{
+  display:flex;justify-content:space-between;align-items:center;
+  font-size:.8rem;font-weight:500;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em
+}
+.field label span{color:var(--ink);font-size:.9rem;font-weight:600;text-transform:none;letter-spacing:0}
+.field input[type=range]{
+  width:100%;-webkit-appearance:none;height:6px;border-radius:3px;
+  background:linear-gradient(to right,var(--teal) 0%,var(--teal) var(--pct,50%),#e2ddd4 var(--pct,50%));
+  outline:none;cursor:pointer
+}
+.field input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none;width:18px;height:18px;border-radius:50%;
+  background:var(--ink);border:3px solid var(--teal);cursor:pointer
+}
+.btn{
+  padding:12px 24px;border:none;border-radius:10px;
+  font-family:'Syne',sans-serif;font-size:.9rem;font-weight:700;cursor:pointer;
+  transition:all .2s;display:inline-flex;align-items:center;gap:8px
+}
+.btn-primary{background:var(--ink);color:var(--paper)}
+.btn-primary:hover{background:#1e2640;transform:translateY(-1px)}
+.btn-teal{background:var(--teal);color:white}
+.btn-teal:hover{filter:brightness(1.1);transform:translateY(-1px)}
+.btn-ghost{background:transparent;color:var(--muted);border:1.5px solid var(--border)}
+.btn-ghost:hover{border-color:var(--teal);color:var(--teal)}
+.btn:disabled{opacity:.4;pointer-events:none}
+.btn-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
+.btn-full{width:100%;justify-content:center;margin-top:8px}
+.spinner-wrap{padding:60px;display:flex;flex-direction:column;align-items:center;gap:16px;display:none}
+.spinner{width:40px;height:40px;border:3px solid var(--border);border-top-color:var(--teal);border-radius:50%;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.result-hero{
+  display:flex;align-items:center;gap:20px;
+  padding:24px;background:var(--ink);border-radius:12px;color:var(--paper);margin-bottom:20px
+}
+.hero-label{font-family:'Syne',sans-serif;font-size:2rem;font-weight:800;line-height:1.1}
+.hero-sub{font-size:.85rem;opacity:.6;margin-top:4px}
+.hero-conf{
+  margin-left:auto;text-align:right;
+  font-family:'Syne',sans-serif;font-size:2.5rem;font-weight:800;color:var(--teal)
+}
+.hero-conf small{display:block;font-size:.7rem;font-family:'DM Sans',sans-serif;opacity:.6;margin-top:-2px}
+.prob-row{display:flex;align-items:center;gap:12px;margin-bottom:10px;font-size:.85rem}
+.prob-name{width:110px;flex-shrink:0;font-weight:500}
+.prob-track{flex:1;height:8px;background:#f0ede7;border-radius:4px;overflow:hidden}
+.prob-fill{height:100%;border-radius:4px;transition:width .8s cubic-bezier(.22,1,.36,1)}
+.fill-teal{background:var(--teal)}
+.fill-coral{background:var(--coral)}
+.fill-amber{background:var(--amber)}
+.fill-violet{background:var(--violet)}
+.prob-pct{width:40px;text-align:right;font-weight:600;color:var(--muted)}
+.sensor-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-top:16px}
+@media(max-width:780px){.sensor-grid{grid-template-columns:repeat(3,1fr)}}
+.sensor-tile{
+  background:var(--paper);border-radius:12px;padding:14px;text-align:center;
+  border:1.5px solid var(--border)
+}
+.sensor-tile .val{font-family:'Syne',sans-serif;font-size:1.4rem;font-weight:800;color:var(--ink)}
+.sensor-tile .lbl{font-size:.72rem;color:var(--muted);margin-top:2px;font-weight:500}
+.timeline{display:flex;gap:0;overflow-x:auto;padding-bottom:8px}
+.tl-step{
+  flex:1;min-width:120px;padding:16px 12px;text-align:center;
+  border-right:1.5px solid var(--border);position:relative
+}
+.tl-step:last-child{border-right:none}
+.tl-dot{width:12px;height:12px;border-radius:50%;margin:0 auto 8px;}
+.dot-low{background:#3b82f6}
+.dot-normal{background:var(--green)}
+.dot-stress{background:var(--coral)}
+.tl-state{font-family:'Syne',sans-serif;font-size:.75rem;font-weight:700}
+.tl-vals{font-size:.7rem;color:var(--muted);margin-top:4px;line-height:1.6}
+.shap-block{margin-bottom:20px}
+.shap-class{font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:8px}
+.shap-row{display:flex;align-items:center;gap:10px;margin-bottom:7px;font-size:.83rem}
+.shap-name{width:90px;flex-shrink:0}
+.shap-track{flex:1;height:7px;background:#f0ede7;border-radius:3px;overflow:hidden}
+.shap-fill{height:100%;background:var(--violet);border-radius:3px}
+.shap-val{width:50px;text-align:right;font-size:.75rem;color:var(--muted)}
+#gradcam-canvas{border-radius:10px;width:100%;display:none}
+.rec-section{margin-bottom:20px}
+.rec-label{
+  font-family:'Syne',sans-serif;font-size:.75rem;font-weight:700;
+  text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px;
+  display:flex;align-items:center;gap:6px
+}
+.rec-tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.7rem;font-weight:600;margin-left:6px}
+.tag-red{background:#fee2e2;color:#991b1b}
+.tag-green{background:#d1fae5;color:#065f46}
+.tag-blue{background:#dbeafe;color:#1e40af}
+.rec-list{list-style:none;display:flex;flex-direction:column;gap:8px}
+.rec-list li{
+  padding:10px 14px;border-radius:10px;font-size:.88rem;line-height:1.5;
+  background:var(--paper);border-left:3px solid var(--border)
+}
+.rec-first-aid li{border-left-color:var(--coral)}
+.rec-lifestyle li{border-left-color:var(--teal)}
+.rec-professional li{border-left-color:var(--violet)}
+.trend-badge{
+  display:inline-flex;align-items:center;gap:8px;
+  padding:10px 16px;border-radius:10px;font-size:.88rem;font-weight:500;margin-bottom:16px;width:100%
+}
+.trend-worsen{background:#fff0ee;color:#c0392b;border:1.5px solid #fca99b}
+.trend-improve{background:#ecfdf5;color:#065f46;border:1.5px solid #6ee7b7}
+.trend-stable{background:#f3f4f6;color:#374151;border:1.5px solid #d1d5db}
+.sec-title{
+  font-family:'Syne',sans-serif;font-size:1.4rem;font-weight:800;
+  margin-bottom:20px;display:flex;align-items:center;gap:10px
+}
+.sec-title::after{content:'';flex:1;height:2px;background:var(--border)}
+.hidden{display:none!important}
+.fade-in{animation:fadeIn .5s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+.notice{
+  padding:12px 16px;border-radius:10px;font-size:.85rem;
+  background:#fef8ec;border:1.5px solid #fcd34d;color:#92400e;margin-bottom:16px
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">Mind<span>Sense</span> AI</div>
+  <div class="status-chips" id="status-chips">
+    <div class="chip"><div class="dot" id="d-vit"></div>ViT Facial</div>
+    <div class="chip"><div class="dot" id="d-rnn"></div>RNN Sensor</div>
+    <div class="chip"><div class="dot" id="d-pred"></div>Predictor</div>
+    <div class="chip"><div class="dot" id="d-scaler"></div>Scaler</div>
+  </div>
+</header>
+<main>
+<section>
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-head">
+        <div class="card-icon ci-teal">📸</div>
+        <h2>Facial Expression (Optional)</h2>
+      </div>
+      <div class="card-body">
+        <div id="cam-placeholder" class="cam-overlay" onclick="startCam()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+            <circle cx="12" cy="13" r="4"/>
+          </svg>
+          <span>Click to enable webcam</span>
+        </div>
+        <video id="video" autoplay playsinline></video>
+        <canvas id="canvas"></canvas>
+        <img id="snap-preview" alt="Captured frame">
+        <div class="btn-row">
+          <button class="btn btn-teal hidden" id="btn-capture" onclick="capture()">📸 Capture (C)</button>
+          <button class="btn btn-ghost hidden" id="btn-retake" onclick="retake()">↺ Retake</button>
+          <button class="btn btn-ghost hidden" id="btn-stop-cam" onclick="stopCam()">✕ Stop camera</button>
+        </div>
+        <p style="font-size:.78rem;color:var(--muted);margin-top:12px">
+          Webcam is optional. Press <kbd style="background:var(--border);padding:1px 5px;border-radius:4px">C</kbd> to capture.
+        </p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <div class="card-icon ci-coral">📡</div>
+        <h2>Physiological Sensor Input</h2>
+      </div>
+      <div class="card-body">
+        <form id="sensor-form" onsubmit="analyze(event)">
+          <div class="field">
+            <label>GSR — Galvanic Skin Response <span id="lbl-gsr">5.0 µS</span></label>
+            <input type="range" id="gsr" min="0" max="100" step="0.1" value="5"
+                   oninput="syncSlider('gsr','lbl-gsr',this.value,'µS')">
+          </div>
+          <div class="field">
+            <label>PPG — Heart Rate <span id="lbl-ppg">75 bpm</span></label>
+            <input type="range" id="ppg" min="40" max="200" step="1" value="75"
+                   oninput="syncSlider('ppg','lbl-ppg',this.value,'bpm')">
+          </div>
+          <div class="field">
+            <label>EEG Alpha Power <span id="lbl-alpha">10.0 Hz</span></label>
+            <input type="range" id="eeg_alpha" min="0" max="50" step="0.1" value="10"
+                   oninput="syncSlider('eeg_alpha','lbl-alpha',this.value,'Hz')">
+          </div>
+          <div class="field">
+            <label>EEG Beta Power <span id="lbl-beta">20.0 Hz</span></label>
+            <input type="range" id="eeg_beta" min="0" max="100" step="0.1" value="20"
+                   oninput="syncSlider('eeg_beta','lbl-beta',this.value,'Hz')">
+          </div>
+          <div class="field">
+            <label>EEG Gamma Power <span id="lbl-gamma">35.0 Hz</span></label>
+            <input type="range" id="eeg_gamma" min="0" max="200" step="0.1" value="35"
+                   oninput="syncSlider('eeg_gamma','lbl-gamma',this.value,'Hz')">
+          </div>
+          <button type="submit" class="btn btn-primary btn-full">
+            🔬 Run Full Assessment
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div id="results" class="hidden">
+  <div class="spinner-wrap" id="spinner" style="display:none">
+    <div class="spinner"></div>
+    <span style="color:var(--muted);font-size:.9rem">Analysing…</span>
+  </div>
+  <div id="res-content" class="hidden">
+    <section>
+      <div class="sec-title">Current Assessment</div>
+      <div class="grid-2">
+        <div class="card fade-in" id="card-sensor">
+          <div class="card-head"><div class="card-icon ci-coral">🧠</div><h2>Mental State</h2></div>
+          <div class="card-body">
+            <div class="result-hero">
+              <div>
+                <div class="hero-label" id="state-label">—</div>
+                <div class="hero-sub">Sensor-based classification</div>
+              </div>
+              <div class="hero-conf"><span id="state-conf">—</span>%<small>confidence</small></div>
+            </div>
+            <div id="state-probs"></div>
+            <div class="sensor-grid" id="sensor-tiles"></div>
+          </div>
+        </div>
+        <div class="card fade-in" id="card-facial">
+          <div class="card-head"><div class="card-icon ci-teal">😊</div><h2>Facial Emotion</h2></div>
+          <div class="card-body">
+            <div id="no-facial" class="notice">No image captured — sensor-only assessment</div>
+            <div id="yes-facial" class="hidden">
+              <div class="result-hero">
+                <div>
+                  <div class="hero-label" id="emotion-label">—</div>
+                  <div class="hero-sub">Vision Transformer (ViT)</div>
+                </div>
+                <div class="hero-conf"><span id="emotion-conf">—</span>%<small>confidence</small></div>
+              </div>
+              <div id="emotion-probs"></div>
+            </div>
+            <div id="gradcam-wrap" class="hidden" style="margin-top:16px">
+              <p style="font-size:.78rem;color:var(--muted);margin-bottom:8px">GradCAM — attention heatmap</p>
+              <canvas id="gradcam-canvas"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section>
+      <div class="sec-title">Future Prediction</div>
+      <div class="card fade-in">
+        <div class="card-head"><div class="card-icon ci-amber">🔮</div><h2>5-Step Physiological Forecast (Seq2Seq LSTM)</h2></div>
+        <div class="card-body">
+          <div class="timeline" id="timeline"></div>
+        </div>
+      </div>
+    </section>
+    <section>
+      <div class="sec-title">Explainability (XAI)</div>
+      <div class="card fade-in">
+        <div class="card-head"><div class="card-icon ci-violet">🔍</div><h2>SHAP Feature Importance — Why this prediction?</h2></div>
+        <div class="card-body">
+          <div id="shap-content"></div>
+        </div>
+      </div>
+    </section>
+    <section>
+      <div class="sec-title">AI Recommendations</div>
+      <div class="card fade-in">
+        <div class="card-head"><div class="card-icon ci-green">💡</div><h2>Personalised Health Guidance</h2></div>
+        <div class="card-body" id="rec-body"></div>
+      </div>
+    </section>
+  </div>
+</div>
+</main>
+
+<script>
+let stream=null,blob=null;
+function startCam(){
+  navigator.mediaDevices.getUserMedia({video:{width:640,height:480}}).then(s=>{
+    stream=s;
+    const v=document.getElementById('video');
+    v.srcObject=s;v.style.display='block';
+    document.getElementById('cam-placeholder').classList.add('hidden');
+    show('btn-capture');show('btn-stop-cam');
+  }).catch(e=>alert('Camera error: '+e.message));
+}
+function stopCam(){
+  if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
+  document.getElementById('video').style.display='none';
+  hide('btn-capture');hide('btn-stop-cam');
+  document.getElementById('cam-placeholder').classList.remove('hidden');
+}
+function capture(){
+  const v=document.getElementById('video');
+  const c=document.getElementById('canvas');
+  c.width=v.videoWidth;c.height=v.videoHeight;
+  c.getContext('2d').drawImage(v,0,0);
+  c.toBlob(b=>{
+    blob=b;
+    const img=document.getElementById('snap-preview');
+    img.src=URL.createObjectURL(b);img.style.display='block';
+    v.style.display='none';
+    hide('btn-capture');hide('btn-stop-cam');show('btn-retake');
+    if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
+  },'image/jpeg',.95);
+}
+function retake(){
+  blob=null;
+  document.getElementById('snap-preview').style.display='none';
+  hide('btn-retake');
+  document.getElementById('cam-placeholder').classList.remove('hidden');
+}
+document.addEventListener('keydown',e=>{
+  if((e.key==='c'||e.key==='C')&&!document.getElementById('btn-capture').classList.contains('hidden'))capture();
+});
+function syncSlider(id,lblId,val,unit){
+  document.getElementById(lblId).textContent=parseFloat(val).toFixed(1)+' '+unit;
+  const el=document.getElementById(id);
+  const min=+el.min,max=+el.max,pct=((val-min)/(max-min)*100).toFixed(1)+'%';
+  el.style.setProperty('--pct',pct);
+}
+['gsr','ppg','eeg_alpha','eeg_beta','eeg_gamma'].forEach(id=>{
+  const el=document.getElementById(id);
+  if(el)el.dispatchEvent(new Event('input'));
+});
+function show(id){document.getElementById(id)?.classList.remove('hidden')}
+function hide(id){document.getElementById(id)?.classList.add('hidden')}
+function pct(v){return(v*100).toFixed(1)}
+const FILL_COLORS=['fill-teal','fill-coral','fill-amber','fill-violet','fill-teal','fill-coral','fill-amber'];
+function probBars(containerId,probs,colors){
+  const c=document.getElementById(containerId);
+  c.innerHTML='';
+  Object.entries(probs).sort((a,b)=>b[1]-a[1]).forEach(([k,v],i)=>{
+    const col=colors?colors[i%colors.length]:FILL_COLORS[i%FILL_COLORS.length];
+    c.innerHTML+=`<div class="prob-row">
+      <span class="prob-name">${k}</span>
+      <div class="prob-track"><div class="prob-fill ${col}" style="width:${pct(v)}%"></div></div>
+      <span class="prob-pct">${pct(v)}%</span>
+    </div>`;
+  });
+}
+async function pollStatus(){
+  try{
+    const d=await(await fetch('/api/status')).json();
+    const map={vit_facial:'d-vit',rnn_sensor:'d-rnn',predictor:'d-pred',scaler:'d-scaler'};
+    for(const[k,id] of Object.entries(map)){
+      const dot=document.getElementById(id);
+      dot.className='dot pulse '+(d.models[k]?'ok':'');
+    }
+  }catch(e){}
+}
+pollStatus();setInterval(pollStatus,30000);
+async function analyze(e){
+  e.preventDefault();
+  show('results');
+  document.getElementById('spinner').style.display='flex';
+  hide('res-content');
+  const fd=new FormData();
+  fd.append('gsr',document.getElementById('gsr').value);
+  fd.append('ppg',document.getElementById('ppg').value);
+  fd.append('eeg_alpha',document.getElementById('eeg_alpha').value);
+  fd.append('eeg_beta',document.getElementById('eeg_beta').value);
+  fd.append('eeg_gamma',document.getElementById('eeg_gamma').value);
+  if(blob)fd.append('file',blob,'frame.jpg');
+  try{
+    const res=await fetch('/api/predict/complete',{method:'POST',body:fd});
+    if(!res.ok){const err=await res.json();throw new Error(err.detail||'Server error');}
+    const data=await res.json();
+    renderResults(data);
+  }catch(err){
+    alert('Analysis failed: '+err.message);
+  }finally{
+    document.getElementById('spinner').style.display='none';
+  }
+}
+function renderResults(d){
+  const s=d.sensor;
+  document.getElementById('state-label').textContent=s.state;
+  document.getElementById('state-conf').textContent=pct(s.confidence);
+  probBars('state-probs',s.probabilities,['fill-coral','fill-teal','fill-amber']);
+  const keys=['gsr','ppg','eeg_alpha','eeg_beta','eeg_gamma'];
+  const names=['GSR','PPG','EEG α','EEG β','EEG γ'];
+  const units=['µS','bpm','Hz','Hz','Hz'];
+  const inputs={
+    gsr:+document.getElementById('gsr').value,
+    ppg:+document.getElementById('ppg').value,
+    eeg_alpha:+document.getElementById('eeg_alpha').value,
+    eeg_beta:+document.getElementById('eeg_beta').value,
+    eeg_gamma:+document.getElementById('eeg_gamma').value,
+  };
+  document.getElementById('sensor-tiles').innerHTML=keys.map((k,i)=>
+    `<div class="sensor-tile"><div class="val">${inputs[k].toFixed(1)}</div><div class="lbl">${names[i]}<br>${units[i]}</div></div>`
+  ).join('');
+  if(d.facial){
+    hide('no-facial');show('yes-facial');
+    document.getElementById('emotion-label').textContent=d.facial.emotion;
+    document.getElementById('emotion-conf').textContent=pct(d.facial.confidence);
+    probBars('emotion-probs',d.facial.probabilities);
+    if(d.gradcam&&d.gradcam.heatmap){show('gradcam-wrap');renderGradCam(d.gradcam.heatmap,d.gradcam.shape);}
+  }else{show('no-facial');hide('yes-facial');hide('gradcam-wrap');}
+  renderTimeline(d.future);
+  if(d.shap)renderShap(d.shap);
+  else document.getElementById('shap-content').innerHTML='<p style="color:var(--muted);font-size:.85rem">SHAP unavailable (model not loaded)</p>';
+  renderRec(d.recommendations);
+  show('res-content');
+  document.getElementById('results').scrollIntoView({behavior:'smooth',block:'start'});
+}
+function renderTimeline(steps){
+  const el=document.getElementById('timeline');
+  el.innerHTML='';
+  steps.forEach(step=>{
+    const dotClass=step.state_index===0?'dot-low':step.state_index===1?'dot-normal':'dot-stress';
+    el.innerHTML+=`<div class="tl-step">
+      <div class="tl-dot ${dotClass}"></div>
+      <div class="tl-state" style="color:${step.state_index===2?'var(--coral)':step.state_index===0?'#3b82f6':'var(--green)'}">${step.state}</div>
+      <div class="tl-vals">GSR ${step.gsr}<br>PPG ${step.ppg}<br>α ${step.eeg_alpha}<br>β ${step.eeg_beta}<br>γ ${step.eeg_gamma}</div>
+      <div style="font-size:.68rem;color:var(--muted);margin-top:6px">Step ${step.step}</div>
+    </div>`;
+  });
+}
+function renderShap(shap){
+  const el=document.getElementById('shap-content');
+  el.innerHTML='';
+  for(const[cls,feats] of Object.entries(shap)){
+    const maxVal=Math.max(...Object.values(feats));
+    let rows='';
+    Object.entries(feats).sort((a,b)=>b[1]-a[1]).forEach(([f,v])=>{
+      const p=maxVal>0?(v/maxVal*100).toFixed(1):0;
+      rows+=`<div class="shap-row">
+        <span class="shap-name">${f}</span>
+        <div class="shap-track"><div class="shap-fill" style="width:${p}%"></div></div>
+        <span class="shap-val">${v.toFixed(4)}</span>
+      </div>`;
+    });
+    el.innerHTML+=`<div class="shap-block"><div class="shap-class">${cls}</div>${rows}</div>`;
+  }
+}
+function renderGradCam(heatmap,shape){
+  const canvas=document.getElementById('gradcam-canvas');
+  canvas.style.display='block';
+  const[H,W]=shape;
+  canvas.width=W;canvas.height=H;
+  const ctx=canvas.getContext('2d');
+  const img=ctx.createImageData(W,H);
+  for(let i=0;i<heatmap.length;i++){
+    const v=heatmap[i];
+    const r=Math.round(Math.min(255,v*2*255));
+    const g=Math.round(Math.min(255,(1-Math.abs(v-.5)*2)*255));
+    const b=Math.round(Math.min(255,(1-v)*2*255));
+    img.data[i*4]=r;img.data[i*4+1]=g;img.data[i*4+2]=b;img.data[i*4+3]=180;
+  }
+  ctx.putImageData(img,0,0);
+}
+function renderRec(r){
+  const body=document.getElementById('rec-body');
+  const trendClass=r.trend==='worsening'?'trend-worsen':r.trend==='improving'?'trend-improve':'trend-stable';
+  const trendIcon=r.trend==='worsening'?'📉':r.trend==='improving'?'📈':'📊';
+  let html=`<div class="trend-badge ${trendClass}">${trendIcon} ${r.trend_message}</div>`;
+  if(r.emotion_tip){
+    html+=`<div style="padding:10px 14px;border-radius:10px;background:#f3f0ff;border-left:3px solid var(--violet);font-size:.88rem;margin-bottom:16px">${r.emotion_tip}</div>`;
+  }
+  html+=`<div class="rec-section">
+    <div class="rec-label">🚨 First Aid <span class="rec-tag tag-red">Immediate</span></div>
+    <ul class="rec-list rec-first-aid">${r.first_aid.map(i=>`<li>${i}</li>`).join('')}</ul>
+  </div>`;
+  html+=`<div class="rec-section">
+    <div class="rec-label">🌿 Lifestyle <span class="rec-tag tag-green">Daily</span></div>
+    <ul class="rec-list rec-lifestyle">${r.lifestyle.map(i=>`<li>${i}</li>`).join('')}</ul>
+  </div>`;
+  html+=`<div class="rec-section">
+    <div class="rec-label">🩺 Professional <span class="rec-tag tag-blue">When needed</span></div>
+    <ul class="rec-list rec-professional">${r.professional.map(i=>`<li>${i}</li>`).join('')}</ul>
+  </div>`;
+  body.innerHTML=html;
+}
+</script>
+</body>
+</html>"""
+
+
+@app.get("/", response_class=HTMLResponse)
+def root():
+    return HTML
+
+
+if __name__ == "__main__":
+    print("\n" + "═" * 60)
+    print("  MindSense AI — Mental Health Assessment Server")
+    print("═" * 60)
+    print(f"  Models : {os.path.abspath(MODEL_DIR)}")
+    print("  UI     : http://localhost:8000")
+    print("  Docs   : http://localhost:8000/docs")
+    print("═" * 60 + "\n")
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+

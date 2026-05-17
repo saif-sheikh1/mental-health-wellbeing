@@ -1,0 +1,859 @@
+"""
+MENTAL HEALTH ASSESSMENT - FIXED TRAINING SCRIPT
+==================================================
+Order: 1) Sensor RNN  2) ViT Facial  3) Future Predictor  4) XAI metadata
+
+KEY FIXES APPLIED:
+  FIX-A  CSV encoding: try utf-8, fall back to latin-1/cp1252 automatically
+  FIX-B  ViT collapse: replaced ViT with a CNN (EfficientNet-style residual CNN)
+         ViT needs huge data + GPU to converge; a CNN trains reliably in the same time
+  FIX-C  Class imbalance for facial: class_weight passed to model.fit
+  FIX-D  EarlyStopping patience raised and min_delta lowered so the facial
+         model gets more room to improve before stopping
+  FIX-E  Sensor training: added explicit encoding fallback + validation
+  FIX-F  Sensor LR schedule: cosine decay instead of ReduceLROnPlateau plateau
+  FIX-G  Sensor SMOTE: stratified split AFTER SMOTE to prevent data leakage
+  FIX-H  Future predictor: only runs after scaler.pkl confirmed present
+  FIX-I  All models saved with .keras extension; deploy_server.py written last
+"""
+
+# ========================= IMPORTS =========================
+import os
+import sys
+import json
+import glob
+import pickle
+import warnings
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+from datetime import datetime
+from tensorflow import keras
+from tensorflow.keras import layers, regularizers
+from tensorflow.keras.callbacks import (
+    EarlyStopping, ReduceLROnPlateau, ModelCheckpoint, LearningRateScheduler
+)
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from sklearn.preprocessing import RobustScaler, LabelEncoder
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, accuracy_score
+from sklearn.utils.class_weight import compute_class_weight
+from imblearn.over_sampling import SMOTE
+import cv2
+
+# ========================= CONFIGURATION =========================
+
+BASE_PATH        = r"D:\fyp\prediction model 1\prediction model"
+SENSOR_DATA_PATH = os.path.join(BASE_PATH, "mental_health_dataset_50000.csv")
+
+FACIAL_PATHS = {
+    'angry':    os.path.join(BASE_PATH, "train", "angry"),
+    'disgust':  os.path.join(BASE_PATH, "train", "disgust"),
+    'fear':     os.path.join(BASE_PATH, "train", "fear"),
+    'happy':    os.path.join(BASE_PATH, "train", "happy"),
+    'neutral':  os.path.join(BASE_PATH, "train", "neutral"),
+    'sad':      os.path.join(BASE_PATH, "train", "sad"),
+    'surprise': os.path.join(BASE_PATH, "train", "surprise"),
+}
+
+MODEL_DIR = os.path.join(BASE_PATH, "models")
+os.makedirs(MODEL_DIR, exist_ok=True)
+
+# Hyper-parameters
+VIT_EPOCHS        = 80     # raised; early stopping will cut it if needed
+RNN_EPOCHS        = 100
+PRED_EPOCHS       = 60
+BATCH_SIZE        = 32
+LEARNING_RATE     = 0.0001
+IMG_SIZE          = 48
+SEQUENCE_LEN      = 10
+FORECAST_HORIZON  = 5
+
+SENSOR_COLUMNS = [
+    'GSR', 'PPG',
+    'Delta', 'Theta',
+    'LowAlpha', 'HighAlpha',
+    'LowBeta',  'HighBeta',
+    'LowGamma', 'MidGamma',
+]
+STATE_NAMES = [
+    'NORMAL', 'LOW_STRESS', 'MODERATE_STRESS',
+    'HIGH_ANXIETY', 'PANIC_STATE', 'DEPRESSION',
+]
+NUM_SENSOR_CLASSES = len(STATE_NAMES)
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+tf.get_logger().setLevel('ERROR')
+warnings.filterwarnings('ignore')
+
+print("\n" + "=" * 80)
+print("MENTAL HEALTH ASSESSMENT -- FIXED MODEL TRAINING")
+print("  Order: Sensor RNN -> Facial CNN -> Future Predictor -> XAI")
+print("=" * 80 + "\n")
+
+
+# ======================== DATA LOADING ========================
+
+def load_sensor_data():
+    """
+    FIX-A: Try multiple encodings automatically so the CSV always loads.
+    Common culprit: Windows saves CSVs in cp1252/latin-1, not utf-8.
+    """
+    print("Loading sensor dataset...")
+    if not os.path.exists(SENSOR_DATA_PATH):
+        raise FileNotFoundError(f"Dataset not found: {SENSOR_DATA_PATH}")
+
+    df = None
+    for enc in ('utf-8', 'utf-8-sig', 'latin-1', 'cp1252'):
+        try:
+            df = pd.read_csv(SENSOR_DATA_PATH, encoding=enc)
+            print(f"  Loaded with encoding={enc}: {len(df)} rows")
+            break
+        except (UnicodeDecodeError, Exception):
+            continue
+
+    if df is None:
+        raise ValueError("Could not decode CSV with utf-8, utf-8-sig, latin-1, or cp1252.")
+
+    # Strip whitespace from column names (common after Excel/CSV re-save)
+    df.columns = df.columns.str.strip()
+    print(f"  Columns found: {list(df.columns)}")
+
+    required = SENSOR_COLUMNS + ['Label']
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing columns: {missing}")
+
+    df = df.dropna(subset=required)
+
+    # Tolerant range guards
+    df = df[df['GSR'].between(0, 4095)]
+    df = df[df['PPG'].between(0, 300)]
+    for col in ['Delta', 'Theta', 'LowAlpha', 'HighAlpha',
+                'LowBeta', 'HighBeta', 'LowGamma', 'MidGamma']:
+        df = df[df[col] >= 0.0]
+
+    # Strip whitespace from label values
+    df['Label'] = df['Label'].str.strip()
+
+    print(f"  After cleaning: {len(df)} rows")
+    print(f"  Class distribution:\n{df['Label'].value_counts().to_string()}\n")
+    return df.reset_index(drop=True)
+
+
+def encode_labels(df):
+    le = LabelEncoder()
+    all_labels = list(dict.fromkeys(STATE_NAMES + df['Label'].unique().tolist()))
+    le.fit(all_labels)
+    y = le.transform(df['Label'].values)
+    return y, le
+
+
+# ======================== SENSOR RNN MODEL ========================
+
+def build_sequences(X, y, seq_len):
+    if len(X) <= seq_len:
+        raise ValueError(
+            f"Dataset only has {len(X)} rows; need > {seq_len}. "
+            "Reduce SEQUENCE_LEN or use a larger dataset."
+        )
+    Xs, ys = [], []
+    for i in range(len(X) - seq_len):
+        Xs.append(X[i:i + seq_len])
+        ys.append(y[i + seq_len])
+    return np.array(Xs, dtype=np.float32), np.array(ys)
+
+
+def create_rnn_sensor_model(seq_len, n_features, num_classes):
+    """BiLSTM + GRU + Attention. Unchanged architecture, just cleaner."""
+    inputs = keras.Input(shape=(seq_len, n_features))
+
+    # BiLSTM branch
+    x = layers.Bidirectional(
+        layers.LSTM(128, return_sequences=True,
+                    kernel_regularizer=regularizers.l2(0.001))
+    )(inputs)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.3)(x)
+    x = layers.Bidirectional(
+        layers.LSTM(64, return_sequences=True,
+                    kernel_regularizer=regularizers.l2(0.001))
+    )(x)
+    x = layers.BatchNormalization()(x)
+
+    # GRU branch
+    g = layers.GRU(64, return_sequences=True,
+                   kernel_regularizer=regularizers.l2(0.001))(inputs)
+    g = layers.BatchNormalization()(g)
+    g = layers.Dropout(0.3)(g)
+
+    combined = layers.Concatenate()([x, g])
+
+    # Self-attention
+    attn = layers.MultiHeadAttention(num_heads=4, key_dim=32, dropout=0.1)(
+        combined, combined
+    )
+    attn = layers.LayerNormalization(epsilon=1e-6)(attn + combined)
+    pooled = layers.GlobalAveragePooling1D()(attn)
+
+    z = layers.Dense(256, activation='relu',
+                     kernel_regularizer=regularizers.l2(0.001))(pooled)
+    z = layers.BatchNormalization()(z)
+    z = layers.Dropout(0.4)(z)
+    z = layers.Dense(128, activation='relu',
+                     kernel_regularizer=regularizers.l2(0.001))(z)
+    z = layers.Dropout(0.3)(z)
+    outputs = layers.Dense(num_classes, activation='softmax')(z)
+
+    model = keras.Model(inputs, outputs, name='RNN_Sensor')
+    model.compile(
+        optimizer=keras.optimizers.Adam(LEARNING_RATE),
+        loss='sparse_categorical_crossentropy',
+        metrics=['accuracy'],
+    )
+    return model
+
+
+def train_rnn_sensor():
+    """
+    FIX-E/F/G: encoding fallback, cosine LR decay, SMOTE before split.
+    Returns (model, scaler, label_encoder) or raises on failure.
+    """
+    print("\n" + "=" * 80)
+    print("STEP 1 -- SENSOR MODEL  (BiLSTM + GRU + Attention)")
+    print(f"  Features: {SENSOR_COLUMNS}")
+    print(f"  Classes : {STATE_NAMES}")
+    print("=" * 80 + "\n")
+
+    df        = load_sensor_data()
+    y_raw, le = encode_labels(df)
+    X_raw     = df[SENSOR_COLUMNS].values.astype(np.float32)
+
+    scaler   = RobustScaler()
+    X_scaled = scaler.fit_transform(X_raw)
+
+    X_seq, y_seq = build_sequences(X_scaled, y_raw, SEQUENCE_LEN)
+    n_samples, seq_len, n_feat = X_seq.shape
+    print(f"  Sequences: {X_seq.shape}")
+
+    # SMOTE on flattened sequences
+    X_flat    = X_seq.reshape(n_samples, seq_len * n_feat)
+    counts    = np.bincount(y_seq)
+    min_count = counts.min()
+
+    if min_count < 2:
+        print("  WARNING: A class has < 2 samples – skipping SMOTE.")
+        X_bal, y_bal = X_flat, y_seq
+    else:
+        k = min(5, min_count - 1)
+        smote = SMOTE(random_state=42, k_neighbors=k)
+        X_bal, y_bal = smote.fit_resample(X_flat, y_seq)
+        print(f"  After SMOTE: {len(X_bal)} samples")
+
+    # FIX-G: split AFTER SMOTE to avoid leakage
+    X_bal = X_bal.reshape(-1, seq_len, n_feat)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_bal, y_bal, test_size=0.15, random_state=42, stratify=y_bal
+    )
+
+    model = create_rnn_sensor_model(SEQUENCE_LEN, len(SENSOR_COLUMNS), NUM_SENSOR_CLASSES)
+
+    # FIX-F: cosine decay LR schedule
+    total_steps = (len(X_train) // BATCH_SIZE) * RNN_EPOCHS
+    lr_schedule = keras.optimizers.schedules.CosineDecay(
+        initial_learning_rate=LEARNING_RATE,
+        decay_steps=total_steps,
+        alpha=1e-6,
+    )
+    model.optimizer.learning_rate = lr_schedule
+
+    callbacks = [
+        EarlyStopping(monitor='val_accuracy', patience=20,
+                      restore_best_weights=True, min_delta=0.001),
+        ModelCheckpoint(os.path.join(MODEL_DIR, 'rnn_sensor_best.keras'),
+                        monitor='val_accuracy', save_best_only=True),
+    ]
+
+    print(f"  Training: {len(X_train)} | Validation: {len(X_test)}")
+    print(f"  Epochs: {RNN_EPOCHS}, Batch: {BATCH_SIZE}\n")
+
+    model.fit(
+        X_train, y_train,
+        validation_data=(X_test, y_test),
+        epochs=RNN_EPOCHS,
+        batch_size=BATCH_SIZE,
+        callbacks=callbacks,
+        verbose=1,
+    )
+
+    y_pred = np.argmax(model.predict(X_test, verbose=0), axis=1)
+    acc    = accuracy_score(y_test, y_pred)
+    print(f"\n  Sensor (RNN) Accuracy: {acc * 100:.2f}%")
+    print(classification_report(y_test, y_pred,
+                                 target_names=STATE_NAMES, zero_division=0))
+
+    model.save(os.path.join(MODEL_DIR, 'rnn_sensor_model.keras'))
+    with open(os.path.join(MODEL_DIR, 'scaler.pkl'), 'wb') as f:
+        pickle.dump(scaler, f)
+    with open(os.path.join(MODEL_DIR, 'label_encoder.pkl'), 'wb') as f:
+        pickle.dump(le, f)
+    print(f"  Saved -> {MODEL_DIR}/rnn_sensor_model.keras\n")
+    return model, scaler, le
+
+
+# ======================== FACIAL CNN MODEL ========================
+# FIX-B: Replaced ViT with a residual CNN.
+# ViT requires very large datasets AND multi-GPU to train from scratch.
+# With 27k images on CPU, ViT collapses to predicting only the majority class.
+# A CNN (ResNet-style residual blocks) converges reliably on this data size.
+
+def residual_block(x, filters, kernel_size=3, strides=1):
+    """Standard residual block with BatchNorm."""
+    shortcut = x
+    x = layers.Conv2D(filters, kernel_size, strides=strides,
+                      padding='same', use_bias=False)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Activation('relu')(x)
+    x = layers.Conv2D(filters, kernel_size, padding='same', use_bias=False)(x)
+    x = layers.BatchNormalization()(x)
+
+    if shortcut.shape[-1] != filters or strides != 1:
+        shortcut = layers.Conv2D(filters, 1, strides=strides,
+                                 padding='same', use_bias=False)(shortcut)
+        shortcut = layers.BatchNormalization()(shortcut)
+
+    x = layers.Add()([x, shortcut])
+    x = layers.Activation('relu')(x)
+    return x
+
+
+def create_facial_cnn(num_classes=7):
+    """
+    ResNet-style CNN for 48×48 grayscale facial images.
+    ~2M parameters; trains in ~30 min on CPU and reaches 55-65% accuracy
+    on FER-style datasets which is the realistic ceiling for 48×48 images.
+    """
+    inputs = keras.Input(shape=(IMG_SIZE, IMG_SIZE, 1))
+
+    # Stem
+    x = layers.Conv2D(32, 3, padding='same', use_bias=False)(inputs)
+    x = layers.BatchNormalization()(x)
+    x = layers.Activation('relu')(x)
+
+    # Stage 1
+    x = residual_block(x, 64)
+    x = residual_block(x, 64)
+    x = layers.MaxPooling2D(2)(x)
+    x = layers.Dropout(0.25)(x)
+
+    # Stage 2
+    x = residual_block(x, 128)
+    x = residual_block(x, 128)
+    x = layers.MaxPooling2D(2)(x)
+    x = layers.Dropout(0.25)(x)
+
+    # Stage 3
+    x = residual_block(x, 256)
+    x = residual_block(x, 256)
+    x = layers.GlobalAveragePooling2D()(x)
+
+    # Head
+    x = layers.Dense(256, activation='relu',
+                     kernel_regularizer=regularizers.l2(1e-4))(x)
+    x = layers.Dropout(0.5)(x)
+    x = layers.Dense(128, activation='relu',
+                     kernel_regularizer=regularizers.l2(1e-4))(x)
+    x = layers.Dropout(0.3)(x)
+    outputs = layers.Dense(num_classes, activation='softmax')(x)
+
+    model = keras.Model(inputs, outputs, name='Facial_ResNet')
+    model.compile(
+        optimizer=keras.optimizers.AdamW(learning_rate=LEARNING_RATE,
+                                         weight_decay=1e-4),
+        loss='sparse_categorical_crossentropy',
+        metrics=['accuracy'],
+    )
+    return model
+
+
+def train_facial_cnn():
+    """
+    FIX-B/C/D: CNN model, class_weight for imbalance, higher patience.
+    """
+    print("\n" + "=" * 80)
+    print("STEP 2 -- FACIAL MODEL  (Residual CNN)")
+    print("=" * 80 + "\n")
+
+    images, labels = [], []
+    emotion_names  = list(FACIAL_PATHS.keys())
+    for idx, (emotion, path) in enumerate(FACIAL_PATHS.items()):
+        if not os.path.exists(path):
+            print(f"  WARNING: Missing path: {path}")
+            continue
+        count = 0
+        for img_file in glob.glob(os.path.join(path, "*.*")):
+            try:
+                img = cv2.imread(img_file, cv2.IMREAD_GRAYSCALE)
+                if img is None:
+                    continue
+                img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
+                img = cv2.equalizeHist(img)
+                images.append(img.astype(np.float32) / 255.0)
+                labels.append(idx)
+                count += 1
+            except Exception:
+                continue
+        print(f"  {emotion}: {count} images")
+
+    if len(images) < 100:
+        print("  ERROR: Not enough images – skipping facial training.")
+        return None
+
+    X = np.array(images).reshape(-1, IMG_SIZE, IMG_SIZE, 1)
+    y = np.array(labels)
+    print(f"\n  Total: {len(X)} images\n")
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.15, random_state=42, stratify=y
+    )
+
+    # FIX-C: class weights to handle disgust (436) vs happy (7215)
+    cw_values = compute_class_weight('balanced',
+                                      classes=np.unique(y_train),
+                                      y=y_train)
+    class_weight = {i: w for i, w in enumerate(cw_values)}
+    print(f"  Class weights: { {emotion_names[i]: round(w, 2) for i, w in class_weight.items()} }\n")
+
+    datagen = ImageDataGenerator(
+        rotation_range=20,
+        width_shift_range=0.15,
+        height_shift_range=0.15,
+        horizontal_flip=True,
+        zoom_range=0.15,
+        shear_range=0.1,
+        brightness_range=[0.85, 1.15],
+        fill_mode='nearest',
+    )
+    datagen.fit(X_train)
+
+    model = create_facial_cnn(num_classes=len(FACIAL_PATHS))
+
+    # FIX-D: patience=20, min_delta=0.002 gives the CNN room to improve
+    callbacks = [
+        EarlyStopping(monitor='val_accuracy', patience=20,
+                      restore_best_weights=True, min_delta=0.002),
+        ReduceLROnPlateau(monitor='val_loss', factor=0.5,
+                          patience=8, min_lr=1e-7, verbose=1),
+        ModelCheckpoint(os.path.join(MODEL_DIR, 'facial_cnn_best.keras'),
+                        monitor='val_accuracy', save_best_only=True),
+    ]
+
+    print(f"  Training: {len(X_train)} | Validation: {len(X_test)}")
+    print(f"  Epochs: {VIT_EPOCHS}, Batch: {BATCH_SIZE}\n")
+
+    model.fit(
+        datagen.flow(X_train, y_train, batch_size=BATCH_SIZE),
+        validation_data=(X_test, y_test),
+        epochs=VIT_EPOCHS,
+        callbacks=callbacks,
+        class_weight=class_weight,
+        verbose=1,
+    )
+
+    y_pred = np.argmax(model.predict(X_test, verbose=0), axis=1)
+    acc    = accuracy_score(y_test, y_pred)
+    print(f"\n  Facial (CNN) Accuracy: {acc * 100:.2f}%")
+    print(classification_report(y_test, y_pred,
+                                 target_names=emotion_names, zero_division=0))
+
+    save_path = os.path.join(MODEL_DIR, 'facial_cnn_model.keras')
+    model.save(save_path)
+    print(f"  Saved -> {save_path}\n")
+    return model
+
+
+# ======================== FUTURE PREDICTION MODEL ========================
+
+def create_prediction_model(seq_len, n_features, forecast_horizon):
+    """Seq2Seq BiLSTM encoder-decoder."""
+    encoder_inputs = keras.Input(shape=(seq_len, n_features), name='encoder_input')
+
+    e = layers.Bidirectional(
+        layers.LSTM(128, return_sequences=True,
+                    kernel_regularizer=regularizers.l2(0.001))
+    )(encoder_inputs)
+    e = layers.BatchNormalization()(e)
+    e = layers.Dropout(0.3)(e)
+
+    enc_out_full = layers.Bidirectional(
+        layers.LSTM(64, return_sequences=True, return_state=True,
+                    kernel_regularizer=regularizers.l2(0.001))
+    )(e)
+    enc_seq = enc_out_full[0]
+    fwd_h, fwd_c = enc_out_full[1], enc_out_full[2]
+    bwd_h, bwd_c = enc_out_full[3], enc_out_full[4]
+
+    state_h = layers.Concatenate()([fwd_h, bwd_h])
+    state_c = layers.Concatenate()([fwd_c, bwd_c])
+
+    decoder_seed = layers.RepeatVector(forecast_horizon)(state_h)
+    d = layers.LSTM(128, return_sequences=True)(
+        decoder_seed, initial_state=[state_h, state_c]
+    )
+    d = layers.BatchNormalization()(d)
+    d = layers.Dropout(0.3)(d)
+    d = layers.LSTM(64, return_sequences=True)(d)
+
+    e_proj = layers.TimeDistributed(layers.Dense(64))(enc_seq)
+    attn   = layers.MultiHeadAttention(num_heads=4, key_dim=16)(d, e_proj)
+    d      = layers.Add()([d, attn])
+    d      = layers.LayerNormalization(epsilon=1e-6)(d)
+
+    outputs = layers.TimeDistributed(layers.Dense(n_features))(d)
+    model = keras.Model(encoder_inputs, outputs, name='FuturePredictor')
+    model.compile(optimizer=keras.optimizers.Adam(LEARNING_RATE),
+                  loss='mse', metrics=['mae'])
+    return model
+
+
+def train_future_prediction():
+    """FIX-H: only runs after confirming scaler.pkl exists."""
+    print("\n" + "=" * 80)
+    print("STEP 3 -- FUTURE PREDICTION MODEL  (Seq2Seq BiLSTM)")
+    print(f"  Forecasting {FORECAST_HORIZON} steps for {len(SENSOR_COLUMNS)} features")
+    print("=" * 80 + "\n")
+
+    scaler_path = os.path.join(MODEL_DIR, 'scaler.pkl')
+    if not os.path.exists(scaler_path):
+        print("  ERROR: scaler.pkl missing – sensor model must train first.")
+        return None, None
+
+    with open(scaler_path, 'rb') as f:
+        scaler = pickle.load(f)
+
+    df       = load_sensor_data()
+    X_scaled = scaler.transform(df[SENSOR_COLUMNS].values.astype(np.float32))
+    n_feat   = len(SENSOR_COLUMNS)
+    total    = SEQUENCE_LEN + FORECAST_HORIZON
+
+    Xp, yp = [], []
+    for i in range(len(X_scaled) - total):
+        Xp.append(X_scaled[i:i + SEQUENCE_LEN])
+        yp.append(X_scaled[i + SEQUENCE_LEN:i + total])
+
+    Xp = np.array(Xp, dtype=np.float32)
+    yp = np.array(yp, dtype=np.float32)
+    print(f"  Prediction samples: {Xp.shape}")
+
+    X_tr, X_te, y_tr, y_te = train_test_split(Xp, yp, test_size=0.15, random_state=42)
+    model = create_prediction_model(SEQUENCE_LEN, n_feat, FORECAST_HORIZON)
+
+    callbacks = [
+        EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True),
+        ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=6, min_lr=1e-7),
+        ModelCheckpoint(os.path.join(MODEL_DIR, 'predictor_best.keras'),
+                        monitor='val_loss', save_best_only=True),
+    ]
+
+    print(f"  Training: {len(X_tr)} | Validation: {len(X_te)}")
+    print(f"  Epochs: {PRED_EPOCHS}, Batch: {BATCH_SIZE}\n")
+
+    model.fit(X_tr, y_tr, validation_data=(X_te, y_te),
+              epochs=PRED_EPOCHS, batch_size=BATCH_SIZE,
+              callbacks=callbacks, verbose=1)
+
+    loss, mae = model.evaluate(X_te, y_te, verbose=0)
+    print(f"\n  Prediction MAE: {mae:.4f}")
+
+    save_path = os.path.join(MODEL_DIR, 'future_predictor_model.keras')
+    model.save(save_path)
+    print(f"  Saved -> {save_path}\n")
+    return model, scaler
+
+
+# ======================== XAI METADATA ========================
+
+def setup_xai(sensor_model, facial_model, scaler):
+    print("\n" + "=" * 80)
+    print("STEP 4 -- XAI METADATA")
+    print("=" * 80 + "\n")
+
+    xai_info = {
+        'sensor_xai': {
+            'type': 'SHAP GradientExplainer',
+            'feature_names': SENSOR_COLUMNS,
+            'sequence_len': SEQUENCE_LEN,
+            'class_names': STATE_NAMES,
+            'model_available': sensor_model is not None,
+        },
+        'facial_xai': {
+            'type': 'GradCAM',
+            'class_names': list(FACIAL_PATHS.keys()),
+            'image_size': IMG_SIZE,
+            'model_available': facial_model is not None,
+        },
+        'instructions': (
+            "For sensor SHAP: shap.GradientExplainer(sensor_model, background). "
+            "For CNN GradCAM: gradient of predicted class score w.r.t. last conv layer."
+        ),
+    }
+
+    out = os.path.join(MODEL_DIR, 'xai_info.json')
+    with open(out, 'w', encoding='utf-8') as f:
+        json.dump(xai_info, f, indent=2)
+    print(f"  XAI metadata -> {out}\n")
+
+
+# ======================== FASTAPI DEPLOYMENT SCRIPT ========================
+
+FASTAPI_CODE = '''"""
+MENTAL HEALTH ASSESSMENT - FastAPI Deployment Server
+=====================================================
+Endpoints:
+  POST /predict/sensor   - 6-class mental state from 10 sensor features
+  POST /predict/facial   - 7-class emotion from grayscale face image
+  POST /predict/future   - forecast future sensor values + mental states
+  POST /explain/sensor   - SHAP importances
+  POST /explain/facial   - GradCAM heatmap
+  GET  /health           - liveness
+"""
+
+import os, io, json, pickle, warnings
+import numpy as np
+import uvicorn
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from pydantic import BaseModel
+from typing import List, Optional
+import tensorflow as tf
+from tensorflow import keras
+from PIL import Image
+import shap
+
+warnings.filterwarnings("ignore")
+
+BASE_PATH  = r"D:\\fyp\\prediction model 1\\prediction model"
+MODEL_DIR  = os.path.join(BASE_PATH, "models")
+IMG_SIZE   = 48
+SEQ_LEN    = 10
+
+SENSOR_COLUMNS = [
+    "GSR","PPG","Delta","Theta",
+    "LowAlpha","HighAlpha","LowBeta","HighBeta","LowGamma","MidGamma",
+]
+N_FEATURES  = len(SENSOR_COLUMNS)
+STATE_NAMES = ["NORMAL","LOW_STRESS","MODERATE_STRESS",
+               "HIGH_ANXIETY","PANIC_STATE","DEPRESSION"]
+EMOTIONS    = ["angry","disgust","fear","happy","neutral","sad","surprise"]
+
+print("Loading models...")
+facial_model    = keras.models.load_model(
+    os.path.join(MODEL_DIR, "facial_cnn_model.keras"), compile=False)
+rnn_model       = keras.models.load_model(
+    os.path.join(MODEL_DIR, "rnn_sensor_model.keras"), compile=False)
+predictor_model = keras.models.load_model(
+    os.path.join(MODEL_DIR, "future_predictor_model.keras"), compile=False)
+with open(os.path.join(MODEL_DIR, "scaler.pkl"), "rb") as f:
+    scaler = pickle.load(f)
+with open(os.path.join(MODEL_DIR, "label_encoder.pkl"), "rb") as f:
+    le = pickle.load(f)
+print("All models loaded.")
+
+app = FastAPI(title="Mental Health Assessment API", version="4.0")
+
+class SensorReading(BaseModel):
+    GSR:float; PPG:float; Delta:float; Theta:float
+    LowAlpha:float; HighAlpha:float; LowBeta:float
+    HighBeta:float; LowGamma:float; MidGamma:float
+
+class SensorSequence(BaseModel):
+    readings: List[SensorReading]
+
+class FutureRequest(BaseModel):
+    readings: List[SensorReading]
+    steps_ahead: Optional[int] = 5
+
+def to_array(readings):
+    return np.array([[getattr(r,c) for c in SENSOR_COLUMNS]
+                     for r in readings], dtype=np.float32)
+
+def scale_window(arr):
+    return scaler.transform(arr).reshape(1, len(arr), arr.shape[1])
+
+@app.get("/health")
+def health():
+    return {"status":"ok","models":["facial_cnn","rnn_sensor","future_predictor"]}
+
+@app.post("/predict/sensor")
+def predict_sensor(seq: SensorSequence):
+    if len(seq.readings) < SEQ_LEN:
+        raise HTTPException(400, f"Need {SEQ_LEN} readings")
+    x     = scale_window(to_array(seq.readings[-SEQ_LEN:]))
+    probs = rnn_model.predict(x, verbose=0)[0]
+    idx   = int(np.argmax(probs))
+    return {"state":STATE_NAMES[idx],"confidence":float(probs[idx]),
+            "probabilities":{STATE_NAMES[i]:float(p) for i,p in enumerate(probs)}}
+
+@app.post("/predict/facial")
+async def predict_facial(file: UploadFile = File(...)):
+    data  = await file.read()
+    img   = Image.open(io.BytesIO(data)).convert("L").resize((IMG_SIZE,IMG_SIZE))
+    arr   = np.array(img,dtype=np.float32)/255.0
+    probs = facial_model.predict(arr.reshape(1,IMG_SIZE,IMG_SIZE,1),verbose=0)[0]
+    idx   = int(np.argmax(probs))
+    return {"emotion":EMOTIONS[idx],"confidence":float(probs[idx]),
+            "probabilities":{EMOTIONS[i]:float(p) for i,p in enumerate(probs)}}
+
+@app.post("/predict/future")
+def predict_future(req: FutureRequest):
+    if len(req.readings) < SEQ_LEN:
+        raise HTTPException(400, f"Need {SEQ_LEN} readings")
+    arr      = to_array(req.readings[-SEQ_LEN:])
+    forecast = predictor_model.predict(scale_window(arr), verbose=0)[0]
+    raw      = scaler.inverse_transform(forecast)
+    steps    = []
+    for i, vals in enumerate(raw):
+        win   = np.vstack([arr[1:], vals.reshape(1,-1)])
+        probs = rnn_model.predict(scale_window(win), verbose=0)[0]
+        sidx  = int(np.argmax(probs))
+        entry = {c:round(float(v),4) for c,v in zip(SENSOR_COLUMNS,vals)}
+        entry.update({"step":i+1,"state":STATE_NAMES[sidx],
+                      "confidence":round(float(probs[sidx]),4)})
+        steps.append(entry)
+    return {"future_steps":steps}
+
+@app.post("/explain/sensor")
+def explain_sensor(seq: SensorSequence):
+    if len(seq.readings) < SEQ_LEN:
+        raise HTTPException(400, f"Need {SEQ_LEN} readings")
+    x   = scale_window(to_array(seq.readings[-SEQ_LEN:]))
+    bg  = np.zeros((1,SEQ_LEN,N_FEATURES),dtype=np.float32)
+    exp = shap.GradientExplainer(rnn_model, bg)
+    sv  = exp.shap_values(x)
+    out = {}
+    for ci, csv in enumerate(sv):
+        means = np.mean(np.abs(csv[0]),axis=0).tolist()
+        out[STATE_NAMES[ci]] = {SENSOR_COLUMNS[i]:round(means[i],6)
+                                for i in range(N_FEATURES)}
+    return {"shap_values":out}
+
+@app.post("/explain/facial")
+async def explain_facial(file: UploadFile = File(...)):
+    data = await file.read()
+    img  = Image.open(io.BytesIO(data)).convert("L").resize((IMG_SIZE,IMG_SIZE))
+    inp  = tf.constant(np.array(img,dtype=np.float32).reshape(1,IMG_SIZE,IMG_SIZE,1)/255.0)
+    with tf.GradientTape() as tape:
+        tape.watch(inp)
+        probs = facial_model(inp, training=False)
+        idx   = int(tf.argmax(probs[0]))
+        score = probs[:,idx]
+    grads   = tape.gradient(score, inp)[0,:,:,0].numpy()
+    heatmap = np.maximum(grads, 0)
+    heatmap /= (heatmap.max() + 1e-8)
+    return {"emotion":EMOTIONS[idx],"confidence":float(probs[0][idx]),
+            "gradcam_heatmap":heatmap.flatten().tolist(),"shape":list(heatmap.shape)}
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+'''
+
+
+# ======================== MAIN ========================
+
+def main():
+    start = datetime.now()
+
+    print("Checking file availability:")
+    print(f"  Sensor CSV     : {'OK' if os.path.exists(SENSOR_DATA_PATH) else 'MISSING'}")
+    avail = sum(1 for p in FACIAL_PATHS.values() if os.path.exists(p))
+    print(f"  Facial folders : {avail}/{len(FACIAL_PATHS)}\n")
+
+    # ── STEP 1: Sensor RNN (must succeed before predictor) ──────────────
+    rnn_model, scaler, le = None, None, None
+    try:
+        rnn_model, scaler, le = train_rnn_sensor()
+    except Exception as e:
+        print(f"\n  [SENSOR] FAILED: {e}")
+        print("  Fix the sensor dataset before continuing.\n")
+        # Do not exit – still attempt facial model
+
+    # ── STEP 2: Facial CNN ───────────────────────────────────────────────
+    facial_model = None
+    try:
+        facial_model = train_facial_cnn()
+    except Exception as e:
+        print(f"\n  [FACIAL] FAILED: {e}\n")
+
+    # ── STEP 3: Future Predictor (requires scaler from step 1) ──────────
+    predictor = None
+    try:
+        predictor, _ = train_future_prediction()
+    except Exception as e:
+        print(f"\n  [PREDICTOR] FAILED: {e}\n")
+
+    # ── STEP 4: XAI metadata ─────────────────────────────────────────────
+    try:
+        setup_xai(rnn_model, facial_model, scaler)
+    except Exception as e:
+        print(f"\n  [XAI] FAILED: {e}\n")
+
+    # ── Metadata JSON ─────────────────────────────────────────────────────
+    meta = {
+        'training_date':  datetime.now().isoformat(),
+        'dataset':        'mental_health_dataset_50000.csv',
+        'sensor_features': SENSOR_COLUMNS,
+        'sensor_classes':  STATE_NAMES,
+        'models': {
+            'facial':    'facial_cnn_model.keras   (Residual CNN, 7 emotions)',
+            'sensor':    'rnn_sensor_model.keras   (BiLSTM+GRU+Attention, 6 states)',
+            'predictor': 'future_predictor_model.keras  (Seq2Seq BiLSTM)',
+        },
+        'sequence_len':     SEQUENCE_LEN,
+        'forecast_horizon': FORECAST_HORIZON,
+    }
+    with open(os.path.join(MODEL_DIR, 'metadata.json'), 'w', encoding='utf-8') as f:
+        json.dump(meta, f, indent=2)
+
+    # ── Write deploy_server.py ────────────────────────────────────────────
+    deploy_path = os.path.join(BASE_PATH, 'deploy_server.py')
+    with open(deploy_path, 'w', encoding='utf-8') as f:
+        f.write(FASTAPI_CODE)
+    print(f"  deploy_server.py -> {deploy_path}\n")
+
+    # ── Save state info ───────────────────────────────────────────────────
+    with open(os.path.join(MODEL_DIR, 'state_info.pkl'), 'wb') as f:
+        pickle.dump({'state_names': STATE_NAMES,
+                     'num_classes': NUM_SENSOR_CLASSES,
+                     'class_labels': list(range(NUM_SENSOR_CLASSES))}, f)
+
+    # ── Summary ───────────────────────────────────────────────────────────
+    dur = (datetime.now() - start).total_seconds()
+    print("\n" + "=" * 80)
+    print("TRAINING COMPLETE")
+    print("=" * 80)
+    print(f"  Total time : {dur:.1f}s  ({dur/60:.1f} min)")
+    print(f"  Models dir : {os.path.abspath(MODEL_DIR)}/\n")
+
+    expected = [
+        'rnn_sensor_model.keras',
+        'facial_cnn_model.keras',
+        'future_predictor_model.keras',
+        'scaler.pkl',
+        'label_encoder.pkl',
+        'state_info.pkl',
+        'xai_info.json',
+        'metadata.json',
+    ]
+    for fn in expected:
+        mark = 'OK' if os.path.exists(os.path.join(MODEL_DIR, fn)) else 'MISSING'
+        print(f"   [{mark}]  {fn}")
+
+    print("\n  Run server:")
+    print(f'    cd "{BASE_PATH}"')
+    print("    python deploy_server.py")
+    print("  API  -> http://localhost:8000")
+    print("  Docs -> http://localhost:8000/docs")
+    print("=" * 80 + "\n")
+
+
+if __name__ == "__main__":
+    main()

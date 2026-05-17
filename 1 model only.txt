@@ -1,0 +1,989 @@
+"""
+MENTAL HEALTH ASSESSMENT - ADVANCED TRAINING SCRIPT
+=====================================================
+Features:
+- RNN (LSTM/GRU) for temporal/sequential sensor data
+- Vision Transformer (ViT) for facial expression recognition
+- XAI (SHAP + GradCAM) for model explainability
+- Future state prediction (next N steps forecasting)
+- Target accuracy: 85%+
+
+USAGE:
+1. pip install tensorflow scikit-learn pandas numpy pillow opencv-python
+       imbalanced-learn shap tf-keras-vis fastapi uvicorn python-multipart
+2. python train_models_advanced.py
+3. python deploy_server.py  (after training)
+"""
+
+import os
+import sys
+import re
+import json
+import glob
+import pickle
+import warnings
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+from datetime import datetime
+from tensorflow import keras
+from tensorflow.keras import layers, regularizers
+from tensorflow.keras.callbacks import (
+    EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
+)
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from sklearn.preprocessing import RobustScaler
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import (
+    classification_report, accuracy_score
+)
+from imblearn.over_sampling import SMOTE
+import cv2
+
+# ============================= CONFIGURATION =============================
+
+BASE_PATH = r"D:\fyp\prediction model"
+
+THRESHOLD_DATA_PATH = os.path.join(BASE_PATH, "stress_mental_health_dataset_updated.csv")
+SENSOR_DATA_PATH    = os.path.join(BASE_PATH, "mental_health_multimodal.csv")
+
+FACIAL_PATHS = {
+    'angry':    os.path.join(BASE_PATH, "train", "angry"),
+    'disgust':  os.path.join(BASE_PATH, "train", "disgust"),
+    'fear':     os.path.join(BASE_PATH, "train", "fear"),
+    'happy':    os.path.join(BASE_PATH, "train", "happy"),
+    'neutral':  os.path.join(BASE_PATH, "train", "neutral"),
+    'sad':      os.path.join(BASE_PATH, "train", "sad"),
+    'surprise': os.path.join(BASE_PATH, "train", "surprise"),
+}
+
+MODEL_DIR = os.path.join(BASE_PATH, "models")
+os.makedirs(MODEL_DIR, exist_ok=True)
+
+# Training hyper-parameters
+VIT_EPOCHS        = 6
+RNN_EPOCHS        = 8
+PRED_EPOCHS       = 6
+BATCH_SIZE        = 3
+LEARNING_RATE     = 0.0001
+IMG_SIZE          = 48        # Facial image size (48x48)
+PATCH_SIZE        = 8         # ViT patch size
+NUM_HEADS         = 4         # ViT attention heads
+TRANSFORMER_UNITS = [128, 64]
+SEQUENCE_LEN      = 10        # Time-steps for RNN
+FORECAST_HORIZON  = 5         # Steps ahead to predict
+
+# Column mappings
+SENSOR_COLUMNS = {
+    'gsr':       'GSR_VALUE',
+    'ppg':       'PPG_Value',
+    'eeg_alpha': 'EEG_Alpha_Power',
+    'eeg_beta':  'EEG_Beta_Power',
+    'eeg_gamma': 'EEG_Gamma_Power',
+}
+THRESHOLD_COLUMNS = {
+    'gsr':       'GSR',
+    'ppg':       'PPG',
+    'eeg_alpha': 'EEG Alpha',
+    'eeg_beta':  'EEG Beta',
+    'eeg_gamma': 'EEG Gamma',
+}
+STATE_NAMES = ['Low Activity', 'Normal', 'High Stress']
+
+# =========================================================================
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+tf.get_logger().setLevel('ERROR')
+warnings.filterwarnings('ignore')
+
+print("\n" + "=" * 80)
+print("🚀 MENTAL HEALTH ASSESSMENT — ADVANCED MODEL TRAINING")
+print("    Modules: Vision Transformer | RNN-LSTM | XAI | Future Prediction")
+print("=" * 80 + "\n")
+
+
+# ======================== UTILITY FUNCTIONS ========================
+
+def safe_float_convert(value):
+    if pd.isna(value):
+        return np.nan
+    if isinstance(value, (int, float)):
+        return float(value)
+    s = str(value).strip()
+    s = re.sub(r'[µ%A-Za-z]', '', s).strip()
+    if '-' in s and not s.startswith('-'):
+        parts = s.split('-')
+        if len(parts) == 2:
+            try:
+                return (float(parts[0]) + float(parts[1])) / 2.0
+            except Exception:
+                pass
+    nums = re.findall(r'-?\d+\.?\d*', s)
+    if nums:
+        try:
+            return float(nums[0])
+        except Exception:
+            pass
+    return np.nan
+
+
+def get_default_thresholds():
+    return {
+        'gsr':       {'normal_min': 2.0,  'normal_max': 15.0},
+        'ppg':       {'normal_min': 60,   'normal_max': 100},
+        'eeg_alpha': {'normal_min': 8.0,  'normal_max': 13.0},
+        'eeg_beta':  {'normal_min': 13.0, 'normal_max': 30.0},
+        'eeg_gamma': {'normal_min': 30.0, 'normal_max': 80.0},
+    }
+
+
+def load_threshold_data():
+    print("📊 Loading thresholds...")
+    if not os.path.exists(THRESHOLD_DATA_PATH):
+        print("   ⚠️  File missing – using defaults")
+        return get_default_thresholds()
+    try:
+        df = pd.read_csv(THRESHOLD_DATA_PATH, dtype=str, low_memory=False)
+        required = list(THRESHOLD_COLUMNS.values())
+        if not all(c in df.columns for c in required):
+            print("   ⚠️  Missing columns – using defaults")
+            return get_default_thresholds()
+        for col in required:
+            df[col] = df[col].apply(safe_float_convert)
+        df = df.dropna(subset=required)
+        if len(df) < 10:
+            return get_default_thresholds()
+        thresholds = {}
+        for key, col in THRESHOLD_COLUMNS.items():
+            thresholds[key] = {
+                'normal_min': float(df[col].quantile(0.25)),
+                'normal_max': float(df[col].quantile(0.75)),
+            }
+        print(f"   ✅ Loaded from {len(df)} samples\n")
+        return thresholds
+    except Exception as e:
+        print(f"   ⚠️  Error: {e} – using defaults")
+        return get_default_thresholds()
+
+
+def clean_sensor_data(df):
+    print("🧹 Cleaning sensor data...")
+    initial = len(df)
+    df = df.drop_duplicates().dropna()
+    cols = list(SENSOR_COLUMNS.values())
+    for col in cols:
+        Q1, Q3 = df[col].quantile(0.25), df[col].quantile(0.75)
+        IQR = Q3 - Q1
+        df = df[(df[col] >= Q1 - 3 * IQR) & (df[col] <= Q3 + 3 * IQR)]
+    df = df[df[SENSOR_COLUMNS['gsr']] >= 0]
+    df = df[(df[SENSOR_COLUMNS['ppg']] >= 40) & (df[SENSOR_COLUMNS['ppg']] <= 200)]
+    df = df[(df[SENSOR_COLUMNS['eeg_alpha']] >= 0) & (df[SENSOR_COLUMNS['eeg_alpha']] <= 50)]
+    df = df[(df[SENSOR_COLUMNS['eeg_beta']] >= 0) & (df[SENSOR_COLUMNS['eeg_beta']] <= 100)]
+    df = df[(df[SENSOR_COLUMNS['eeg_gamma']] >= 0) & (df[SENSOR_COLUMNS['eeg_gamma']] <= 200)]
+    print(f"   Removed {initial - len(df)} rows → {len(df)} clean samples\n")
+    return df
+
+
+def assign_state(row, thresholds):
+    weights = {'gsr': 1.5, 'ppg': 1.3, 'eeg_alpha': 1.0, 'eeg_beta': 1.2, 'eeg_gamma': 1.0}
+    scores = []
+    for sensor, col in SENSOR_COLUMNS.items():
+        v = row[col]
+        t = thresholds[sensor]
+        if v < t['normal_min']:
+            scores.append(-(t['normal_min'] - v) / t['normal_min'] * weights[sensor])
+        elif v > t['normal_max']:
+            scores.append((v - t['normal_max']) / t['normal_max'] * weights[sensor])
+        else:
+            scores.append(0)
+    avg = sum(scores) / sum(weights.values())
+    return 2 if avg > 0.12 else (0 if avg < -0.12 else 1)
+
+
+# ======================== VISION TRANSFORMER (ViT) ========================
+
+class Patches(layers.Layer):
+    def __init__(self, patch_size, **kwargs):
+        super().__init__(**kwargs)
+        self.patch_size = patch_size
+
+    def call(self, images):
+        batch = tf.shape(images)[0]
+        patches = tf.image.extract_patches(
+            images=images,
+            sizes=[1, self.patch_size, self.patch_size, 1],
+            strides=[1, self.patch_size, self.patch_size, 1],
+            rates=[1, 1, 1, 1],
+            padding='VALID',
+        )
+        dim = patches.shape[-1]
+        patches = tf.reshape(patches, [batch, -1, dim])
+        return patches
+
+    def get_config(self):
+        cfg = super().get_config()
+        cfg.update({'patch_size': self.patch_size})
+        return cfg
+
+
+class PatchEncoder(layers.Layer):
+    def __init__(self, num_patches, projection_dim, **kwargs):
+        super().__init__(**kwargs)
+        self.num_patches    = num_patches
+        self.projection_dim = projection_dim
+        self.projection     = layers.Dense(projection_dim)
+        self.pos_embedding  = layers.Embedding(num_patches, projection_dim)
+
+    def call(self, patches):
+        positions = tf.range(start=0, limit=self.num_patches, delta=1)
+        return self.projection(patches) + self.pos_embedding(positions)
+
+    def get_config(self):
+        cfg = super().get_config()
+        cfg.update({'num_patches': self.num_patches,
+                    'projection_dim': self.projection_dim})
+        return cfg
+
+
+def mlp_block(x, hidden_units, dropout_rate):
+    for units in hidden_units:
+        x = layers.Dense(units, activation=tf.nn.gelu)(x)
+        x = layers.Dropout(dropout_rate)(x)
+    return x
+
+
+def create_vit_model(num_classes=7):
+    num_patches     = (IMG_SIZE // PATCH_SIZE) ** 2
+    projection_dim  = 64
+    num_heads       = NUM_HEADS
+    transformer_units = TRANSFORMER_UNITS
+    num_transformer_layers = 6
+    mlp_head_units  = [256, 128]
+
+    inputs = keras.Input(shape=(IMG_SIZE, IMG_SIZE, 1))
+    # Convert grayscale to 3-channel for patch extraction consistency
+    x = layers.Conv2D(3, 1, padding='same')(inputs)
+
+    patches     = Patches(PATCH_SIZE)(x)
+    encoded     = PatchEncoder(num_patches, projection_dim)(patches)
+
+    for _ in range(num_transformer_layers):
+        x1 = layers.LayerNormalization(epsilon=1e-6)(encoded)
+        attn = layers.MultiHeadAttention(
+            num_heads=num_heads, key_dim=projection_dim // num_heads, dropout=0.1
+        )(x1, x1)
+        x2   = layers.Add()([attn, encoded])
+        x3   = layers.LayerNormalization(epsilon=1e-6)(x2)
+        x3   = mlp_block(x3, transformer_units, dropout_rate=0.1)
+        encoded = layers.Add()([x3, x2])
+
+    representation = layers.LayerNormalization(epsilon=1e-6)(encoded)
+    representation = layers.Flatten()(representation)
+    representation = layers.Dropout(0.4)(representation)
+
+    features = mlp_block(representation, mlp_head_units, dropout_rate=0.3)
+    outputs  = layers.Dense(num_classes, activation='softmax')(features)
+
+    model = keras.Model(inputs, outputs, name='ViT_Facial')
+    model.compile(
+        optimizer=keras.optimizers.AdamW(learning_rate=LEARNING_RATE, weight_decay=1e-4),
+        loss='sparse_categorical_crossentropy',
+        metrics=['accuracy'],
+    )
+    return model
+
+
+def train_facial_vit():
+    print("\n" + "=" * 80)
+    print("🎭 TRAINING FACIAL MODEL — Vision Transformer (ViT)")
+    print("=" * 80 + "\n")
+
+    images, labels = [], []
+    for idx, (emotion, path) in enumerate(FACIAL_PATHS.items()):
+        if not os.path.exists(path):
+            print(f"   ⚠️  Missing: {path}")
+            continue
+        count = 0
+        for img_file in glob.glob(os.path.join(path, "*.*")):
+            try:
+                img = cv2.imread(img_file, cv2.IMREAD_GRAYSCALE)
+                if img is None:
+                    continue
+                img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
+                img = cv2.equalizeHist(img)
+                img = cv2.GaussianBlur(img, (3, 3), 0)
+                images.append(img.astype(np.float32) / 255.0)
+                labels.append(idx)
+                count += 1
+            except Exception:
+                continue
+        print(f"   {emotion}: {count} images")
+
+    if len(images) < 100:
+        print("❌ Insufficient facial data")
+        return None
+
+    X = np.array(images).reshape(-1, IMG_SIZE, IMG_SIZE, 1)
+    y = np.array(labels)
+    print(f"\n✅ Total: {len(X)} images\n")
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.15, random_state=42, stratify=y
+    )
+
+    datagen = ImageDataGenerator(
+        rotation_range=25,
+        width_shift_range=0.2,
+        height_shift_range=0.2,
+        horizontal_flip=True,
+        zoom_range=0.2,
+        shear_range=0.15,
+        brightness_range=[0.8, 1.2],
+        fill_mode='nearest',
+    )
+    datagen.fit(X_train)
+
+    model = create_vit_model(num_classes=len(FACIAL_PATHS))
+
+    callbacks = [
+        EarlyStopping(monitor='val_accuracy', patience=15, restore_best_weights=True, min_delta=0.001),
+        ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=6, min_lr=1e-7),
+        ModelCheckpoint(os.path.join(MODEL_DIR, 'vit_best.h5'),
+                        monitor='val_accuracy', save_best_only=True),
+    ]
+
+    print(f"Training: {len(X_train)} | Validation: {len(X_test)}")
+    print(f"Epochs: {VIT_EPOCHS}, Batch: {BATCH_SIZE}\n")
+
+    history = model.fit(
+        datagen.flow(X_train, y_train, batch_size=BATCH_SIZE),
+        validation_data=(X_test, y_test),
+        epochs=VIT_EPOCHS,
+        callbacks=callbacks,
+        verbose=1,
+    )
+
+    y_pred = np.argmax(model.predict(X_test, verbose=0), axis=1)
+    acc = accuracy_score(y_test, y_pred)
+    print(f"\n✅ Facial (ViT) Accuracy: {acc * 100:.2f}%")
+    print(classification_report(y_test, y_pred,
+                                target_names=list(FACIAL_PATHS.keys()),
+                                zero_division=0))
+
+    model.save(os.path.join(MODEL_DIR, 'vit_facial_model.h5'))
+    print(f"💾 Saved → {MODEL_DIR}/vit_facial_model.h5\n")
+    return model
+
+
+# ======================== RNN-LSTM SENSOR MODEL ========================
+
+def build_sequences(X, y, seq_len):
+    """Slide a window over rows to create (seq_len, features) sequences."""
+    Xs, ys = [], []
+    for i in range(len(X) - seq_len):
+        Xs.append(X[i:i + seq_len])
+        ys.append(y[i + seq_len])
+    return np.array(Xs), np.array(ys)
+
+
+def create_rnn_sensor_model(seq_len, n_features, num_classes=3):
+    """Bidirectional LSTM + GRU + Attention for sensor classification."""
+    inputs = keras.Input(shape=(seq_len, n_features))
+
+    # Bidirectional LSTM branch
+    x = layers.Bidirectional(layers.LSTM(128, return_sequences=True,
+                                          kernel_regularizer=regularizers.l2(0.001)))(inputs)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.3)(x)
+
+    x = layers.Bidirectional(layers.LSTM(64, return_sequences=True,
+                                          kernel_regularizer=regularizers.l2(0.001)))(x)
+    x = layers.BatchNormalization()(x)
+
+    # GRU branch for complementary temporal features
+    g = layers.GRU(64, return_sequences=True,
+                   kernel_regularizer=regularizers.l2(0.001))(inputs)
+    g = layers.BatchNormalization()(g)
+    g = layers.Dropout(0.3)(g)
+
+    combined = layers.Concatenate()([x, g])
+
+    # Self-attention over time
+    attn_out = layers.MultiHeadAttention(num_heads=4, key_dim=32, dropout=0.1)(combined, combined)
+    attn_out = layers.LayerNormalization(epsilon=1e-6)(attn_out + combined)
+
+    pooled = layers.GlobalAveragePooling1D()(attn_out)
+
+    z = layers.Dense(256, activation='relu', kernel_regularizer=regularizers.l2(0.001))(pooled)
+    z = layers.BatchNormalization()(z)
+    z = layers.Dropout(0.4)(z)
+
+    z = layers.Dense(128, activation='relu', kernel_regularizer=regularizers.l2(0.001))(z)
+    z = layers.Dropout(0.3)(z)
+
+    outputs = layers.Dense(num_classes, activation='softmax')(z)
+
+    model = keras.Model(inputs, outputs, name='RNN_Sensor')
+    model.compile(
+        optimizer=keras.optimizers.Adam(LEARNING_RATE),
+        loss='sparse_categorical_crossentropy',
+        metrics=['accuracy'],
+    )
+    return model
+
+
+def train_rnn_sensor():
+    print("\n" + "=" * 80)
+    print("📊 TRAINING SENSOR MODEL — Bidirectional LSTM + GRU + Attention")
+    print("=" * 80 + "\n")
+
+    thresholds = load_threshold_data()
+
+    if not os.path.exists(SENSOR_DATA_PATH):
+        print(f"❌ Not found: {SENSOR_DATA_PATH}")
+        return None, None
+
+    cols = list(SENSOR_COLUMNS.values())
+    df   = pd.read_csv(SENSOR_DATA_PATH, usecols=cols,
+                       dtype={c: np.float32 for c in cols})
+    print(f"✅ Loaded {len(df)} rows")
+
+    df = clean_sensor_data(df)
+
+    print("🔄 Assigning mental-health states...")
+    df['state'] = df.apply(lambda row: assign_state(row, thresholds), axis=1)
+
+    X_raw = df[cols].values
+    y_raw = df['state'].values
+
+    unique, counts = np.unique(y_raw, return_counts=True)
+    print("\n📊 Class distribution:")
+    for s, c in zip(unique, counts):
+        print(f"   State {s} ({STATE_NAMES[s]}): {c}  ({c / len(y_raw) * 100:.1f}%)")
+
+    if len(unique) < 2:
+        print("❌ Need ≥ 2 classes")
+        return None, None
+
+    # Scale before sequencing
+    scaler = RobustScaler()
+    X_scaled = scaler.fit_transform(X_raw)
+
+    # Build sequences
+    X_seq, y_seq = build_sequences(X_scaled, y_raw, SEQUENCE_LEN)
+    print(f"\n🔁 Sequences: {X_seq.shape}  ({X_seq.shape[0]} samples × {SEQUENCE_LEN} steps × {X_seq.shape[2]} features)")
+
+    # SMOTE on flattened sequences
+    n_samples, seq_len, n_feat = X_seq.shape
+    X_flat = X_seq.reshape(n_samples, seq_len * n_feat)
+
+    min_count = np.bincount(y_seq).min()
+    k_neighbors = min(5, min_count - 1) if min_count > 1 else 1
+    smote = SMOTE(random_state=42, k_neighbors=k_neighbors)
+    X_flat_bal, y_bal = smote.fit_resample(X_flat, y_seq)
+    X_bal = X_flat_bal.reshape(-1, seq_len, n_feat)
+    print(f"⚖️  After SMOTE: {len(X_bal)} samples\n")
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_bal, y_bal, test_size=0.15, random_state=42, stratify=y_bal
+    )
+
+    model = create_rnn_sensor_model(seq_len=SEQUENCE_LEN, n_features=len(cols))
+
+    callbacks = [
+        EarlyStopping(monitor='val_accuracy', patience=15, restore_best_weights=True, min_delta=0.001),
+        ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=7, min_lr=1e-7),
+        ModelCheckpoint(os.path.join(MODEL_DIR, 'rnn_sensor_best.h5'),
+                        monitor='val_accuracy', save_best_only=True),
+    ]
+
+    print(f"Training: {len(X_train)} | Validation: {len(X_test)}")
+    print(f"Epochs: {RNN_EPOCHS}, Batch: {BATCH_SIZE}\n")
+
+    model.fit(X_train, y_train,
+              validation_data=(X_test, y_test),
+              epochs=RNN_EPOCHS,
+              batch_size=BATCH_SIZE,
+              callbacks=callbacks,
+              verbose=1)
+
+    y_pred = np.argmax(model.predict(X_test, verbose=0), axis=1)
+    acc = accuracy_score(y_test, y_pred)
+    print(f"\n✅ Sensor (RNN) Accuracy: {acc * 100:.2f}%")
+    print(classification_report(y_test, y_pred, target_names=STATE_NAMES, zero_division=0))
+
+    model.save(os.path.join(MODEL_DIR, 'rnn_sensor_model.h5'))
+    with open(os.path.join(MODEL_DIR, 'scaler.pkl'), 'wb') as f:
+        pickle.dump(scaler, f)
+    with open(os.path.join(MODEL_DIR, 'thresholds.pkl'), 'wb') as f:
+        pickle.dump(thresholds, f)
+    print(f"💾 Saved → {MODEL_DIR}/rnn_sensor_model.h5\n")
+
+    return model, scaler
+
+
+# ======================== FUTURE PREDICTION MODEL (Seq2Seq LSTM) ========================
+
+def create_prediction_model(seq_len, n_features, forecast_horizon):
+    """
+    Encoder-Decoder LSTM for multi-step future sensor value prediction.
+    Input  : (seq_len, n_features)
+    Output : (forecast_horizon, n_features)  — predicted future sensor readings
+    """
+    encoder_inputs = keras.Input(shape=(seq_len, n_features), name='encoder_input')
+
+    # Encoder
+    e = layers.Bidirectional(layers.LSTM(128, return_sequences=True,
+                                          kernel_regularizer=regularizers.l2(0.001)))(encoder_inputs)
+    e = layers.BatchNormalization()(e)
+    e = layers.Dropout(0.3)(e)
+    _, fwd_h, fwd_c, bwd_h, bwd_c = layers.Bidirectional(
+        layers.LSTM(64, return_state=True,
+                    kernel_regularizer=regularizers.l2(0.001))
+    )(e)
+    state_h = layers.Concatenate()([fwd_h, bwd_h])
+    state_c = layers.Concatenate()([fwd_c, bwd_c])
+
+    # Decoder: repeat the context vector for forecast_horizon steps
+    decoder_inputs = layers.RepeatVector(forecast_horizon)(state_h)
+    d = layers.LSTM(128, return_sequences=True)(decoder_inputs,
+                                                initial_state=[state_h, state_c])
+    d = layers.BatchNormalization()(d)
+    d = layers.Dropout(0.3)(d)
+    d = layers.LSTM(64, return_sequences=True)(d)
+
+    # Attention over encoder output
+    attn = layers.MultiHeadAttention(num_heads=4, key_dim=16)(d, e)
+    d = layers.Add()([d, attn])
+    d = layers.LayerNormalization(epsilon=1e-6)(d)
+
+    outputs = layers.TimeDistributed(layers.Dense(n_features))(d)
+
+    model = keras.Model(encoder_inputs, outputs, name='FuturePredictor')
+    model.compile(optimizer=keras.optimizers.Adam(LEARNING_RATE),
+                  loss='mse', metrics=['mae'])
+    return model
+
+
+def train_future_prediction():
+    print("\n" + "=" * 80)
+    print("🔮 TRAINING FUTURE PREDICTION MODEL — Seq2Seq LSTM")
+    print("=" * 80 + "\n")
+
+    if not os.path.exists(SENSOR_DATA_PATH):
+        print(f"❌ Not found: {SENSOR_DATA_PATH}")
+        return None
+
+    scaler_path = os.path.join(MODEL_DIR, 'scaler.pkl')
+    if not os.path.exists(scaler_path):
+        print("⚠️  Scaler not found – train RNN sensor model first")
+        return None
+
+    with open(scaler_path, 'rb') as f:
+        scaler = pickle.load(f)
+
+    cols = list(SENSOR_COLUMNS.values())
+    df   = pd.read_csv(SENSOR_DATA_PATH, usecols=cols,
+                       dtype={c: np.float32 for c in cols})
+    thresholds = load_threshold_data()
+    df = clean_sensor_data(df)
+    df['state'] = df.apply(lambda row: assign_state(row, thresholds), axis=1)
+
+    X_scaled = scaler.transform(df[cols].values)
+    n_features = len(cols)
+
+    # Build X: seq_len steps in, y: next forecast_horizon steps out
+    total_len = SEQUENCE_LEN + FORECAST_HORIZON
+    X_pred, y_pred = [], []
+    for i in range(len(X_scaled) - total_len):
+        X_pred.append(X_scaled[i:i + SEQUENCE_LEN])
+        y_pred.append(X_scaled[i + SEQUENCE_LEN:i + total_len])
+
+    X_pred = np.array(X_pred)
+    y_pred = np.array(y_pred)
+    print(f"✅ Prediction samples: {X_pred.shape}")
+
+    X_tr, X_te, y_tr, y_te = train_test_split(X_pred, y_pred, test_size=0.15, random_state=42)
+
+    model = create_prediction_model(SEQUENCE_LEN, n_features, FORECAST_HORIZON)
+
+    callbacks = [
+        EarlyStopping(monitor='val_loss', patience=12, restore_best_weights=True),
+        ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-7),
+        ModelCheckpoint(os.path.join(MODEL_DIR, 'predictor_best.h5'),
+                        monitor='val_loss', save_best_only=True),
+    ]
+
+    print(f"Training: {len(X_tr)} | Validation: {len(X_te)}")
+    print(f"Epochs: {PRED_EPOCHS}, Batch: {BATCH_SIZE}\n")
+
+    model.fit(X_tr, y_tr,
+              validation_data=(X_te, y_te),
+              epochs=PRED_EPOCHS,
+              batch_size=BATCH_SIZE,
+              callbacks=callbacks,
+              verbose=1)
+
+    loss, mae = model.evaluate(X_te, y_te, verbose=0)
+    print(f"\n✅ Prediction MAE: {mae:.4f}")
+
+    model.save(os.path.join(MODEL_DIR, 'future_predictor_model.h5'))
+    print(f"💾 Saved → {MODEL_DIR}/future_predictor_model.h5\n")
+    return model
+
+
+# ======================== XAI — SHAP + GRAD-CAM ========================
+
+def setup_xai(sensor_model, vit_model, scaler):
+    """
+    Save XAI artefacts:
+    - SHAP explainer (sensor/RNN model)
+    - GradCAM helper info (ViT — last dense layer target)
+    """
+    print("\n" + "=" * 80)
+    print("🔍 SETTING UP XAI (SHAP + GradCAM metadata)")
+    print("=" * 80 + "\n")
+
+    xai_info = {
+        'sensor_xai': {
+            'type': 'SHAP DeepExplainer',
+            'feature_names': list(SENSOR_COLUMNS.keys()),
+            'sequence_len': SEQUENCE_LEN,
+            'class_names': STATE_NAMES,
+        },
+        'facial_xai': {
+            'type': 'GradCAM',
+            'target_layer': 'dense',          # last Dense layer of ViT
+            'class_names': list(FACIAL_PATHS.keys()),
+            'image_size': IMG_SIZE,
+        },
+        'instructions': (
+            "At inference time use shap.DeepExplainer(sensor_model, background) "
+            "to generate SHAP values. For ViT GradCAM, compute gradients of the "
+            "predicted class score w.r.t. the patch embeddings."
+        ),
+    }
+
+    with open(os.path.join(MODEL_DIR, 'xai_info.json'), 'w') as f:
+        json.dump(xai_info, f, indent=2)
+
+    print("   ✅ XAI metadata saved → models/xai_info.json")
+    print("   ℹ️  SHAP DeepExplainer & GradCAM are applied at inference in deploy_server.py\n")
+
+
+# ======================== FASTAPI DEPLOYMENT SCRIPT ========================
+
+FASTAPI_CODE = '''"""
+MENTAL HEALTH ASSESSMENT — FastAPI Deployment Server
+=====================================================
+Endpoints:
+  POST /predict/sensor      — classify current mental state from sensor readings
+  POST /predict/facial      — classify emotion from a grayscale face image
+  POST /predict/future      — forecast future sensor values + mental states
+  POST /explain/sensor      — SHAP feature importances for sensor prediction
+  POST /explain/facial      — GradCAM heatmap for ViT facial prediction
+  GET  /health              — liveness check
+"""
+
+import os
+import io
+import json
+import pickle
+import warnings
+import numpy as np
+import shap
+
+import uvicorn
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from typing import List, Optional
+
+import tensorflow as tf
+from tensorflow import keras
+import cv2
+from PIL import Image
+
+warnings.filterwarnings("ignore")
+
+# ---- Config ----------------------------------------------------------------
+BASE_PATH  = r"D:\\\\fyp\\\\prediction model"
+MODEL_DIR  = os.path.join(BASE_PATH, "models")
+IMG_SIZE   = 48
+SEQ_LEN    = 10
+N_FEATURES = 5
+STATE_NAMES  = ["Low Activity", "Normal", "High Stress"]
+EMOTION_NAMES = ["angry", "disgust", "fear", "happy", "neutral", "sad", "surprise"]
+
+# ---- Load artefacts --------------------------------------------------------
+print("Loading models…")
+vit_model       = keras.models.load_model(os.path.join(MODEL_DIR, "vit_facial_model.h5"),
+                                          custom_objects={"Patches": None, "PatchEncoder": None},
+                                          compile=False)
+rnn_model       = keras.models.load_model(os.path.join(MODEL_DIR, "rnn_sensor_model.h5"), compile=False)
+predictor_model = keras.models.load_model(os.path.join(MODEL_DIR, "future_predictor_model.h5"), compile=False)
+
+with open(os.path.join(MODEL_DIR, "scaler.pkl"), "rb") as f:
+    scaler = pickle.load(f)
+with open(os.path.join(MODEL_DIR, "thresholds.pkl"), "rb") as f:
+    thresholds = pickle.load(f)
+
+print("All models loaded ✅")
+
+# ---- FastAPI app -----------------------------------------------------------
+app = FastAPI(title="Mental Health Assessment API", version="2.0")
+
+
+# ---- Schemas ---------------------------------------------------------------
+class SensorReading(BaseModel):
+    gsr: float
+    ppg: float
+    eeg_alpha: float
+    eeg_beta: float
+    eeg_gamma: float
+
+class SensorSequence(BaseModel):
+    """10 consecutive sensor readings (list of SensorReading)."""
+    readings: List[SensorReading]
+
+class FutureRequest(BaseModel):
+    readings: List[SensorReading]       # exactly SEQ_LEN readings
+    steps_ahead: Optional[int] = 5
+
+
+# ---- Helpers ---------------------------------------------------------------
+def readings_to_array(readings: List[SensorReading]) -> np.ndarray:
+    arr = np.array([[r.gsr, r.ppg, r.eeg_alpha, r.eeg_beta, r.eeg_gamma]
+                    for r in readings], dtype=np.float32)
+    return arr
+
+
+def build_sequence_input(arr: np.ndarray) -> np.ndarray:
+    scaled = scaler.transform(arr)
+    return scaled.reshape(1, len(arr), arr.shape[1])
+
+
+# ---- Endpoints -------------------------------------------------------------
+@app.get("/health")
+def health():
+    return {"status": "ok", "models": ["vit_facial", "rnn_sensor", "future_predictor"]}
+
+
+@app.post("/predict/sensor")
+def predict_sensor(seq: SensorSequence):
+    arr = readings_to_array(seq.readings[-SEQ_LEN:])
+    if len(arr) < SEQ_LEN:
+        raise HTTPException(400, f"Need exactly {SEQ_LEN} readings")
+    x = build_sequence_input(arr)
+    probs = rnn_model.predict(x, verbose=0)[0]
+    state_idx = int(np.argmax(probs))
+    return {
+        "state_index":       state_idx,
+        "state_label":       STATE_NAMES[state_idx],
+        "confidence":        float(probs[state_idx]),
+        "probabilities":     {STATE_NAMES[i]: float(p) for i, p in enumerate(probs)},
+    }
+
+
+@app.post("/predict/facial")
+async def predict_facial(file: UploadFile = File(...)):
+    data  = await file.read()
+    img   = Image.open(io.BytesIO(data)).convert("L").resize((IMG_SIZE, IMG_SIZE))
+    arr   = np.array(img, dtype=np.float32) / 255.0
+    arr   = arr.reshape(1, IMG_SIZE, IMG_SIZE, 1)
+    probs = vit_model.predict(arr, verbose=0)[0]
+    idx   = int(np.argmax(probs))
+    return {
+        "emotion_index":  idx,
+        "emotion_label":  EMOTION_NAMES[idx],
+        "confidence":     float(probs[idx]),
+        "probabilities":  {EMOTION_NAMES[i]: float(p) for i, p in enumerate(probs)},
+    }
+
+
+@app.post("/predict/future")
+def predict_future(req: FutureRequest):
+    arr = readings_to_array(req.readings[-SEQ_LEN:])
+    if len(arr) < SEQ_LEN:
+        raise HTTPException(400, f"Need at least {SEQ_LEN} readings")
+    x = build_sequence_input(arr)
+    forecast_scaled = predictor_model.predict(x, verbose=0)[0]   # (horizon, n_feat)
+    forecast_raw    = scaler.inverse_transform(forecast_scaled)
+
+    # Derive predicted mental-health state for each forecast step
+    future_states = []
+    for step_vals in forecast_raw:
+        from scipy.stats import zscore
+        vals = step_vals.tolist()
+        scores = []
+        keys = ["gsr", "ppg", "eeg_alpha", "eeg_beta", "eeg_gamma"]
+        weights = [1.5, 1.3, 1.0, 1.2, 1.0]
+        for i, key in enumerate(keys):
+            t = thresholds[key]
+            v = vals[i]
+            if v < t["normal_min"]:
+                scores.append(-(t["normal_min"] - v) / t["normal_min"] * weights[i])
+            elif v > t["normal_max"]:
+                scores.append((v - t["normal_max"]) / t["normal_max"] * weights[i])
+            else:
+                scores.append(0)
+        avg = sum(scores) / sum(weights)
+        s = 2 if avg > 0.12 else (0 if avg < -0.12 else 1)
+        future_states.append({"gsr": round(vals[0], 3),
+                               "ppg": round(vals[1], 3),
+                               "eeg_alpha": round(vals[2], 3),
+                               "eeg_beta": round(vals[3], 3),
+                               "eeg_gamma": round(vals[4], 3),
+                               "predicted_state": STATE_NAMES[s],
+                               "state_index": s})
+
+    return {"forecast_horizon": len(future_states), "future_steps": future_states}
+
+
+@app.post("/explain/sensor")
+def explain_sensor(seq: SensorSequence):
+    """Return SHAP values for each feature at each time step."""
+    arr = readings_to_array(seq.readings[-SEQ_LEN:])
+    x   = build_sequence_input(arr)
+
+    # Use GradientExplainer (works on all TF models including RNNs)
+    background = np.zeros((1, SEQ_LEN, N_FEATURES), dtype=np.float32)
+    explainer  = shap.GradientExplainer(rnn_model, background)
+    shap_vals  = explainer.shap_values(x)  # list of arrays per class
+
+    feature_names = ["gsr", "ppg", "eeg_alpha", "eeg_beta", "eeg_gamma"]
+    result = {}
+    for class_idx, class_sv in enumerate(shap_vals):
+        # Mean absolute SHAP per feature across time steps
+        mean_shap = np.mean(np.abs(class_sv[0]), axis=0).tolist()
+        result[STATE_NAMES[class_idx]] = {
+            feature_names[i]: round(mean_shap[i], 6) for i in range(len(feature_names))
+        }
+    return {"shap_values": result}
+
+
+@app.post("/explain/facial")
+async def explain_facial(file: UploadFile = File(...)):
+    """Return GradCAM heatmap (as flat list) for ViT prediction."""
+    data   = await file.read()
+    img    = Image.open(io.BytesIO(data)).convert("L").resize((IMG_SIZE, IMG_SIZE))
+    arr    = np.array(img, dtype=np.float32) / 255.0
+    inp    = arr.reshape(1, IMG_SIZE, IMG_SIZE, 1)
+
+    probs  = vit_model.predict(inp, verbose=0)[0]
+    pred_class = int(np.argmax(probs))
+
+    # Approximate GradCAM: gradient of predicted-class score w.r.t. input
+    inp_tensor = tf.constant(inp)
+    with tf.GradientTape() as tape:
+        tape.watch(inp_tensor)
+        preds = vit_model(inp_tensor)
+        score = preds[:, pred_class]
+    grads    = tape.gradient(score, inp_tensor)[0, :, :, 0].numpy()
+    heatmap  = np.maximum(grads, 0)
+    heatmap /= (heatmap.max() + 1e-8)
+
+    return {
+        "emotion":   EMOTION_NAMES[pred_class],
+        "confidence": float(probs[pred_class]),
+        "gradcam_heatmap": heatmap.flatten().tolist(),
+        "heatmap_shape":   list(heatmap.shape),
+    }
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+'''
+
+# ======================== MAIN ========================
+
+def main():
+    start = datetime.now()
+
+    print("🔍 Checking file availability:")
+    print(f"   Threshold CSV : {'✅' if os.path.exists(THRESHOLD_DATA_PATH) else '❌'}")
+    print(f"   Sensor CSV    : {'✅' if os.path.exists(SENSOR_DATA_PATH) else '❌'}")
+    available = sum(1 for p in FACIAL_PATHS.values() if os.path.exists(p))
+    print(f"   Facial folders: {available}/{len(FACIAL_PATHS)}\n")
+
+    try:
+        # 1. Vision Transformer — facial emotion
+        vit_model = train_facial_vit()
+
+        # 2. RNN Sensor — current mental state
+        rnn_model, scaler = train_rnn_sensor()
+
+        # 3. Future Prediction — seq2seq forecasting
+        predictor = train_future_prediction()
+
+        # 4. XAI artefacts
+        if rnn_model and vit_model:
+            setup_xai(rnn_model, vit_model, scaler)
+
+        # 5. Metadata
+        metadata = {
+            'training_date':    datetime.now().isoformat(),
+            'models': {
+                'facial':    'vit_facial_model.h5   (Vision Transformer)',
+                'sensor':    'rnn_sensor_model.h5   (Bidirectional LSTM + GRU + Attention)',
+                'predictor': 'future_predictor_model.h5  (Seq2Seq LSTM)',
+            },
+            'xai': {
+                'sensor': 'SHAP GradientExplainer',
+                'facial': 'GradCAM (gradient w.r.t. input)',
+            },
+            'sequence_len':    SEQUENCE_LEN,
+            'forecast_horizon': FORECAST_HORIZON,
+            'sensor_columns':  SENSOR_COLUMNS,
+            'target_accuracy': '≥ 85%',
+        }
+        with open(os.path.join(MODEL_DIR, 'metadata.json'), 'w') as f:
+            json.dump(metadata, f, indent=2)
+
+        # 6. Write deploy_server.py
+        deploy_path = os.path.join(BASE_PATH, 'deploy_server.py')
+        with open(deploy_path, 'w') as f:
+            f.write(FASTAPI_CODE)
+        print(f"📝 deploy_server.py written → {deploy_path}\n")
+
+        # State info
+        state_info = {'state_names': STATE_NAMES, 'num_classes': 3, 'class_labels': [0, 1, 2]}
+        with open(os.path.join(MODEL_DIR, 'state_info.pkl'), 'wb') as f:
+            pickle.dump(state_info, f)
+
+        duration = (datetime.now() - start).total_seconds()
+        print("\n" + "=" * 80)
+        print("🎉 TRAINING COMPLETE")
+        print("=" * 80)
+        print(f"⏱️  Total time  : {duration:.1f}s  ({duration / 60:.1f} min)")
+        print(f"📁 Models saved: {os.path.abspath(MODEL_DIR)}/")
+        print("\nFiles produced:")
+        for fname in [
+            'vit_facial_model.h5',
+            'rnn_sensor_model.h5',
+            'future_predictor_model.h5',
+            'scaler.pkl',
+            'thresholds.pkl',
+            'state_info.pkl',
+            'xai_info.json',
+            'metadata.json',
+        ]:
+            mark = '✅' if os.path.exists(os.path.join(MODEL_DIR, fname)) else '⚠️ '
+            print(f"   {mark}  {fname}")
+
+        print("\n▶  Run deployment server:")
+        print(f"   cd \"{BASE_PATH}\"")
+        print("   python deploy_server.py")
+        print("\n▶  API will be available at  http://localhost:8000")
+        print("   Swagger docs              http://localhost:8000/docs")
+        print("=" * 80 + "\n")
+
+    except Exception as e:
+        import traceback
+        print(f"\n❌ FATAL ERROR: {e}")
+        traceback.print_exc()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
