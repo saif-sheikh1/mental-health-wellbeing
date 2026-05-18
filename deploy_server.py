@@ -7,8 +7,7 @@ Endpoints:
   POST /predict/sensor      - classify current mental state from 10 sensor features
   POST /predict/facial      - classify emotion from a grayscale face image
   POST /predict/future      - forecast future sensor values + mental states (via RNN)
-  POST /explain/sensor      - SHAP feature importances for sensor prediction
-  POST /explain/facial      - GradCAM heatmap for ViT facial prediction
+  POST /explain/facial      - GradCAM heatmap for facial prediction
   GET  /health              - liveness check
 
 FIX 10 ─  BASE_PATH / MODEL_DIR unified.
@@ -21,8 +20,8 @@ import io
 import json
 import pickle
 import warnings
+from pathlib import Path
 import numpy as np
-import shap
 import uvicorn
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
@@ -37,8 +36,8 @@ from PIL import Image
 warnings.filterwarnings("ignore")
 
 # ── Config ───────────────────────────────────────────────────────────────
-BASE_PATH  = r"D:\\fyp\\prediction model 1\\prediction model"
-MODEL_DIR  = os.path.join(BASE_PATH, "models")
+BASE_PATH  = Path(__file__).resolve().parent
+MODEL_DIR  = BASE_PATH / "models"
 IMG_SIZE   = 48
 SEQ_LEN    = 10
 
@@ -106,22 +105,43 @@ CUSTOM_OBJECTS = {"Patches": Patches, "PatchEncoder": PatchEncoder}
 
 # ── Load artefacts ────────────────────────────────────────────────────────
 print("Loading models...")
-vit_model       = keras.models.load_model(
-    os.path.join(MODEL_DIR, "vit_facial_model.keras"),
+
+def load_first_model(candidates, *, custom_objects=None):
+    for path in candidates:
+        if path.exists():
+            return keras.models.load_model(
+                str(path),
+                custom_objects=custom_objects or {},
+                compile=False,
+            )
+    checked = ", ".join(path.name for path in candidates)
+    raise FileNotFoundError(f"No model checkpoint found in {MODEL_DIR}: {checked}")
+
+
+vit_model = load_first_model(
+    [
+        MODEL_DIR / "facial_cnn_model.keras",
+        MODEL_DIR / "facial_cnn_best.keras",
+        MODEL_DIR / "vit_facial_model.keras",
+        MODEL_DIR / "vit_best.keras",
+    ],
     custom_objects=CUSTOM_OBJECTS,
-    compile=False,
 )
-rnn_model       = keras.models.load_model(
-    os.path.join(MODEL_DIR, "rnn_sensor_model.keras"),
-    compile=False,
+rnn_model = load_first_model(
+    [
+        MODEL_DIR / "rnn_sensor_model.keras",
+        MODEL_DIR / "rnn_sensor_best.keras",
+    ],
 )
-predictor_model = keras.models.load_model(
-    os.path.join(MODEL_DIR, "future_predictor_model.keras"),
-    compile=False,
+predictor_model = load_first_model(
+    [
+        MODEL_DIR / "future_predictor_model.keras",
+        MODEL_DIR / "predictor_best.keras",
+    ],
 )
-with open(os.path.join(MODEL_DIR, "scaler.pkl"), "rb") as f:
+with open(MODEL_DIR / "scaler.pkl", "rb") as f:
     scaler = pickle.load(f)
-with open(os.path.join(MODEL_DIR, "label_encoder.pkl"), "rb") as f:
+with open(MODEL_DIR / "label_encoder.pkl", "rb") as f:
     le = pickle.load(f)
 print("All models loaded successfully.")
 
@@ -166,7 +186,7 @@ def build_sequence_input(arr):
 def health():
     return {
         "status": "ok",
-        "models": ["vit_facial", "rnn_sensor", "future_predictor"],
+        "models": ["facial_cnn", "rnn_sensor", "future_predictor"],
     }
 
 
@@ -233,25 +253,6 @@ def predict_future(req: FutureRequest):
         future_steps.append(entry)
 
     return {"forecast_horizon": len(future_steps), "future_steps": future_steps}
-
-
-@app.post("/explain/sensor")
-def explain_sensor(seq: SensorSequence):
-    if len(seq.readings) < SEQ_LEN:
-        raise HTTPException(400, f"Need at least {SEQ_LEN} readings")
-    arr        = readings_to_array(seq.readings[-SEQ_LEN:])
-    x          = build_sequence_input(arr)
-    background = np.zeros((1, SEQ_LEN, N_FEATURES), dtype=np.float32)
-    explainer  = shap.GradientExplainer(rnn_model, background)
-    shap_vals  = explainer.shap_values(x)
-    result     = {}
-    for class_idx, class_sv in enumerate(shap_vals):
-        mean_shap = np.mean(np.abs(class_sv[0]), axis=0).tolist()
-        result[STATE_NAMES[class_idx]] = {
-            SENSOR_COLUMNS[i]: round(mean_shap[i], 6)
-            for i in range(len(SENSOR_COLUMNS))
-        }
-    return {"shap_values": result}
 
 
 @app.post("/explain/facial")

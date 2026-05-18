@@ -19,9 +19,6 @@ scipy
 opencv-python
 Pillow
 
-# XAI
-shap
-
 # FastAPI Server
 fastapi
 uvicorn[standard]

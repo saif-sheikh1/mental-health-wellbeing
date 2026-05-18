@@ -959,7 +959,7 @@ Classes (6)    : NORMAL | LOW_STRESS | MODERATE_STRESS | HIGH_ANXIETY | PANIC_ST
 Emotions (7)   : Angry | Disgust | Fear | Happy | Neutral | Sad | Surprise
 
 Run:
-    pip install fastapi uvicorn tensorflow shap opencv-python pillow scikit-learn
+    pip install fastapi uvicorn tensorflow opencv-python pillow scikit-learn
     python deploy_server.py
 """
 
@@ -1017,6 +1017,9 @@ ARDUINO_PORT = os.environ.get("ARDUINO_PORT")
 # Default 9600 — most common Arduino sketch baud. Override with ARDUINO_BAUD env var.
 ARDUINO_BAUD = int(os.environ.get("ARDUINO_BAUD", "9600"))
 ARDUINO_AUTO_BAUD = os.environ.get("ARDUINO_AUTO_BAUD", "1").strip().lower() not in {"0", "false", "no"}
+ATTACH_EEG_MESSAGE = "Attach EEG sensors for live values"
+EEG_STALE_SECONDS = float(os.environ.get("EEG_STALE_SECONDS", "3.0"))
+EEG_DETACHED_POOR_SIGNAL = int(os.environ.get("EEG_DETACHED_POOR_SIGNAL", "200"))
 
 
 def arduino_baud_candidates(preferred: int) -> list[int]:
@@ -1070,14 +1073,13 @@ CUSTOM_OBJECTS = {}   # Residual CNN has no custom layers
 class ModelManager:
     """
     Loads all artefacts produced by the unified training script and exposes
-    prediction, explanation, and recommendation methods.
+    prediction and recommendation methods.
 
     Load order mirrors training output order:
       1. RNN sensor model  (+ scaler.pkl + label_encoder.pkl)
       2. Facial CNN model  (no custom objects needed)
       3. Future predictor model
-      4. SHAP background   (optional — falls back to zeros if absent)
-      5. state_info.pkl    (optional — cross-checks class names)
+      4. state_info.pkl    (optional — cross-checks class names)
     """
 
     def __init__(self):
@@ -1086,7 +1088,6 @@ class ModelManager:
         self.predictor:    Optional[keras.Model]    = None
         self.scaler                                 = None   # RobustScaler
         self.le                                     = None   # LabelEncoder
-        self.shap_background: Optional[np.ndarray] = None
 
         # Fine-grained status so the UI header chips are accurate
         self.status = {
@@ -1095,7 +1096,6 @@ class ModelManager:
             "predictor":     False,
             "scaler":        False,
             "label_encoder": False,
-            "shap_bg":       False,
         }
 
     # ── Internal helpers ──────────────────────────────────────────────────────
@@ -1204,25 +1204,7 @@ class ModelManager:
         if self.predictor:
             self.status["predictor"] = True
 
-        # 5. SHAP background array (optional — generated only by Doc 1 training)
-        #    The unified training script (Doc 2) does NOT generate shap_background.npy,
-        #    so we fall back to a zero array and note this in the log.
-        bg_path = os.path.join(MODEL_DIR, "shap_background.npy")
-        if os.path.exists(bg_path):
-            try:
-                self.shap_background = np.load(bg_path).astype(np.float32)
-                self.status["shap_bg"] = True
-                print(f"  ✅  {'SHAP background':30s} ← shap_background.npy  {self.shap_background.shape}")
-            except Exception as exc:
-                print(f"  ❌  SHAP background load failed: {exc}")
-        else:
-            print(
-                "  ℹ   shap_background.npy absent (expected — unified training script\n"
-                "      does not generate it).  Using zero background for SHAP."
-            )
-            self.shap_background = np.zeros((1, SEQ_LEN, N_FEATURES), dtype=np.float32)
-
-        # 6. Optional state_info cross-check
+        # 5. Optional state_info cross-check
         si = self._try_load_pickle("state_info.pkl", "state_info (optional check)")
         if si and "state_names" in si:
             if si["state_names"] != STATE_NAMES:
@@ -1315,40 +1297,7 @@ class ModelManager:
         Returns the predicted mental state with per-class probabilities.
         """
         if self.rnn_model is None or self.scaler is None:
-            # Fallback Mock Mode
-            gsr = vals[0]
-            ppg = vals[1]
-            theta = vals[3]
-            
-            if gsr > 25000 or ppg > 130:
-                state = "PANIC_STATE"
-            elif gsr > 15000 or ppg > 110:
-                state = "HIGH_ANXIETY"
-            elif gsr > 8000 or ppg > 90:
-                state = "MODERATE_STRESS"
-            elif theta > 0.6:
-                state = "DEPRESSION"
-            elif gsr > 4000 or ppg > 80:
-                state = "LOW_STRESS"
-            else:
-                state = "NORMAL"
-                
-            state_idx = STATE_NAMES.index(state)
-            probs = [0.05] * 6
-            probs[state_idx] = 0.75
-            sum_p = sum(probs)
-            probs = [p / sum_p for p in probs]
-            
-            return {
-                "state":         state,
-                "state_index":   state_idx,
-                "confidence":    probs[state_idx],
-                "probabilities": {
-                    STATE_NAMES[i]: float(probs[i])
-                    for i in range(6)
-                },
-                "fallback":      True
-            }
+            raise HTTPException(503, "RNN sensor model or scaler is not loaded")
 
         seq   = self._vals_to_seq(vals)
         probs = self.rnn_model.predict(seq, verbose=0)[0]
@@ -1370,27 +1319,7 @@ class ModelManager:
         sensor readings and assign a heuristic mental state to each step.
         """
         if self.predictor is None or self.scaler is None:
-            # Fallback Mock Mode
-            out = []
-            current_vals = list(vals)
-            for step in range(1, 6):
-                next_vals = []
-                for fi, val in enumerate(current_vals):
-                    if fi == 0:
-                        nxt = max(0.0, min(40952.0, val + np.random.uniform(-500, 500)))
-                    elif fi == 1:
-                        nxt = max(40.0, min(200.0, val + np.random.uniform(-3, 3)))
-                    else:
-                        nxt = max(0.0, min(1.0, val + np.random.uniform(-0.05, 0.05)))
-                    next_vals.append(nxt)
-                current_vals = next_vals
-                
-                state, sidx = self._heuristic_state(np.array(current_vals))
-                entry = {"step": step, "state": state, "state_index": sidx}
-                for fi, col in enumerate(SENSOR_COLUMNS):
-                    entry[col.lower()] = round(float(current_vals[fi]), 4)
-                out.append(entry)
-            return out
+            raise HTTPException(503, "Future predictor model or scaler is not loaded")
 
         seq        = self._vals_to_seq(vals)
         fc_scaled  = self.predictor.predict(seq, verbose=0)[0]          # (FORECAST_HORIZON, N_FEATURES)
@@ -1405,95 +1334,7 @@ class ModelManager:
             out.append(entry)
         return out
 
-    # ── XAI methods ───────────────────────────────────────────────────────────
-
-    def explain_shap_sensor(self, vals: list[float]) -> dict:
-        """
-        SHAP GradientExplainer for the RNN sensor model.
-        Returns mean |SHAP| per feature for each mental-state class.
-        """
-        if self.rnn_model is None or self.scaler is None:
-            # Fallback Mock Mode
-            result = {}
-            for class_name in STATE_NAMES:
-                importances = {
-                    "GSR": 0.25, "PPG": 0.20, "Delta": 0.15, "Theta": 0.12,
-                    "LowAlpha": 0.08, "HighAlpha": 0.07, "LowBeta": 0.05,
-                    "HighBeta": 0.04, "LowGamma": 0.02, "MidGamma": 0.02
-                }
-                importances = {k: max(0.0, v + np.random.uniform(-0.02, 0.02)) for k, v in importances.items()}
-                sum_imp = sum(importances.values())
-                result[class_name] = {k: round(v / sum_imp, 6) for k, v in importances.items()}
-            return result
-
-        try:
-            import shap as _shap
-        except ImportError:
-            raise HTTPException(503, "shap package not installed")
-
-        seq = self._vals_to_seq(vals)
-        bg  = self.shap_background   # (1, SEQ_LEN, N_FEATURES)
-
-        explainer = _shap.GradientExplainer(self.rnn_model, bg)
-        sv        = explainer.shap_values(seq)
-
-        result = {}
-        for ci, class_sv in enumerate(sv):
-            mean_abs = np.mean(np.abs(class_sv[0]), axis=0).tolist()  # (N_FEATURES,)
-            class_name = self.le.classes_[ci] if self.le else STATE_NAMES[ci]
-            result[class_name] = {SENSOR_COLUMNS[fi]: round(mean_abs[fi], 6) for fi in range(N_FEATURES)}
-        return result
-
-    def explain_shap_future(self, vals: list[float]) -> dict:
-        """
-        SHAP GradientExplainer for the future predictor.
-        Returns both an aggregate importance dict and a per-step breakdown.
-        """
-        if self.predictor is None or self.scaler is None:
-            # Fallback Mock Mode
-            importances = {
-                "GSR": 0.25, "PPG": 0.20, "Delta": 0.15, "Theta": 0.12,
-                "LowAlpha": 0.08, "HighAlpha": 0.07, "LowBeta": 0.05,
-                "HighBeta": 0.04, "LowGamma": 0.02, "MidGamma": 0.02
-            }
-            per_step = []
-            for step in range(1, 6):
-                step_imp = {k: max(0.0, v + np.random.uniform(-0.03, 0.03)) for k, v in importances.items()}
-                sum_step = sum(step_imp.values())
-                per_step.append({
-                    "step": step,
-                    "shap": {k: round(v / sum_step, 6) for k, v in step_imp.items()}
-                })
-            agg = {k: round(sum(step["shap"][k] for step in per_step) / 5, 6) for k in importances.keys()}
-            return {"aggregate_importance": agg, "per_step": per_step}
-
-        try:
-            import shap as _shap
-        except ImportError:
-            raise HTTPException(503, "shap package not installed")
-
-        seq = self._vals_to_seq(vals)
-        bg  = self.shap_background
-
-        explainer = _shap.GradientExplainer(self.predictor, bg)
-        sv        = explainer.shap_values(seq)
-
-        agg = {}
-        for fi, feat in enumerate(SENSOR_COLUMNS):
-            vals_per_out = [np.mean(np.abs(sv[oi][0, :, fi])) for oi in range(N_FEATURES)]
-            agg[feat] = round(float(np.mean(vals_per_out)), 6)
-
-        per_step = []
-        for step in range(FORECAST_HORIZON):
-            step_dict = {}
-            for fi, feat in enumerate(SENSOR_COLUMNS):
-                step_dict[feat] = round(
-                    float(np.mean([np.abs(sv[oi][0, step % SEQ_LEN, fi]) for oi in range(N_FEATURES)])),
-                    6,
-                )
-            per_step.append({"step": step + 1, "shap": step_dict})
-
-        return {"aggregate_importance": agg, "per_step": per_step}
+    # ── Facial heatmap ────────────────────────────────────────────────────────
 
     def gradcam(self, img_bytes: bytes) -> dict:
         """
@@ -1866,6 +1707,7 @@ class LiveEEGReader:
         self.latest: Optional[dict] = None
         self.error: Optional[str] = EEG_IMPORT_ERROR
         self.packet_count = 0
+        self.last_packet_at: Optional[float] = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -1889,13 +1731,35 @@ class LiveEEGReader:
         thread = self._thread
         if thread and thread.is_alive():
             thread.join(timeout=1.5)
+        with self._lock:
+            self.latest = None
+            self.last_packet_at = None
 
     def is_running(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
 
     def snapshot(self) -> Optional[dict]:
         with self._lock:
-            return dict(self.latest) if self.latest else None
+            if not self.latest:
+                return None
+            snap = dict(self.latest)
+            if self.last_packet_at is not None:
+                age = time.monotonic() - self.last_packet_at
+                snap["age_seconds"] = round(age, 2)
+                if snap.get("online") and age > EEG_STALE_SECONDS:
+                    return {
+                        "online": False,
+                        "live": False,
+                        "attached": False,
+                        "stale": True,
+                        "message": ATTACH_EEG_MESSAGE,
+                        "timestamp": snap.get("timestamp"),
+                        "age_seconds": round(age, 2),
+                        "port": self.port,
+                        "baud": self.baud,
+                        "poor_signal": snap.get("poor_signal"),
+                    }
+            return snap
 
     def _set_error(self, message: str) -> None:
         with self._lock:
@@ -1906,6 +1770,27 @@ class LiveEEGReader:
             self.latest = reading
             self.error = None
             self.packet_count += 1
+            self.last_packet_at = time.monotonic()
+
+    def _set_detached(self, port: str, parsed: dict) -> None:
+        reading = {
+            "online": False,
+            "live": False,
+            "attached": False,
+            "stale": False,
+            "message": ATTACH_EEG_MESSAGE,
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "port": port,
+            "baud": self.baud,
+            "poor_signal": parsed.get("poor_signal"),
+            "attention": parsed.get("attention"),
+            "meditation": parsed.get("meditation"),
+            "blink_strength": parsed.get("blink_strength"),
+        }
+        with self._lock:
+            self.latest = reading
+            self.error = ATTACH_EEG_MESSAGE
+            self.last_packet_at = time.monotonic()
 
     def _run(self) -> None:
         port = self.port or find_default_port()
@@ -1922,13 +1807,25 @@ class LiveEEGReader:
                         continue
 
                     parsed = parse_payload(payload)
-                    if not parsed or "eeg_power" not in parsed:
+                    if not parsed:
+                        continue
+
+                    poor_signal = parsed.get("poor_signal")
+                    if poor_signal is not None and poor_signal >= EEG_DETACHED_POOR_SIGNAL:
+                        self._set_detached(port, parsed)
+                        continue
+
+                    if "eeg_power" not in parsed:
                         continue
 
                     bands = parsed["eeg_power"]
                     normalized = normalize_bands(bands)
                     reading = {
                         "online": True,
+                        "live": True,
+                        "attached": True,
+                        "stale": False,
+                        "message": "Live EEG values are fresh",
                         "timestamp": datetime.now().isoformat(timespec="seconds"),
                         "port": port,
                         "baud": self.baud,
@@ -2127,6 +2024,10 @@ class LiveArduinoReader:
         if not port:
             self._set_error("No Arduino serial device found")
             return
+        # Prevent serial contention: never open the same port the EEG reader uses
+        if port == EEG_PORT:
+            self._set_error("Arduino port matches EEG port — skipping to avoid conflict")
+            return
         self.port = port
 
         candidates = list(self.baud_candidates if ARDUINO_AUTO_BAUD else [self.baud])
@@ -2214,9 +2115,16 @@ def live_sensor_snapshot() -> dict:
     eeg = eeg_reader.snapshot() or {}
     arduino = arduino_reader.snapshot() or {}
     arduino_status = arduino_reader.status()
+    eeg_online = bool(eeg.get("online"))
+    arduino_online = bool(arduino)
 
     merged = {
-        "online": bool(eeg or arduino),
+        "online": bool(eeg_online or arduino_online),
+        "eeg_online": eeg_online,
+        "eeg_attached": bool(eeg.get("attached")) if eeg else False,
+        "eeg_live": bool(eeg.get("live")) if eeg else False,
+        "eeg_stale": bool(eeg.get("stale")) if eeg else False,
+        "message": eeg.get("message") or (None if eeg_online else ATTACH_EEG_MESSAGE),
         "running": {
             "eeg": eeg_reader.is_running(),
             "arduino": arduino_reader.is_running(),
@@ -2226,7 +2134,7 @@ def live_sensor_snapshot() -> dict:
             "arduino": arduino_reader.port,
         },
         "errors": {
-            "eeg": eeg_reader.error,
+            "eeg": eeg_reader.error or eeg.get("message"),
             "arduino": arduino_reader.error,
         },
         "timestamp": eeg.get("timestamp") or arduino.get("timestamp"),
@@ -2258,12 +2166,17 @@ def eeg_live_snapshot() -> dict:
     eeg_reader.start()
     eeg = eeg_reader.snapshot() or {}
     data = {
-        "online": bool(eeg),
+        "online": bool(eeg.get("online")),
+        "live": bool(eeg.get("live")) if eeg else False,
+        "attached": bool(eeg.get("attached")) if eeg else False,
+        "stale": bool(eeg.get("stale")) if eeg else False,
+        "message": eeg.get("message") or (None if eeg.get("online") else ATTACH_EEG_MESSAGE),
         "running": eeg_reader.is_running(),
         "port": eeg_reader.port,
         "baud": eeg_reader.baud,
         "error": eeg_reader.error,
         "timestamp": eeg.get("timestamp"),
+        "age_seconds": eeg.get("age_seconds"),
         "poor_signal": eeg.get("poor_signal"),
         "attention": eeg.get("attention"),
         "meditation": eeg.get("meditation"),
@@ -2308,6 +2221,13 @@ SENSOR_INPUT_FIELDS = [
     "low_beta",  "high_beta",
     "low_gamma", "mid_gamma",
 ]
+
+EEG_INPUT_FIELDS = {
+    "delta", "theta",
+    "low_alpha", "high_alpha",
+    "low_beta", "high_beta",
+    "low_gamma", "mid_gamma",
+}
 
 SENSOR_INPUT_RANGES = {
     "gsr":        (0.0, 40952.0),
@@ -2368,7 +2288,6 @@ def _assessment_from_vals(
     *,
     facial_res: Optional[dict] = None,
     gradcam_res: Optional[dict] = None,
-    include_shap: bool = True,
 ) -> dict:
     """Shared result builder for manual and live sensor assessment paths."""
     sensor_res    = mgr.predict_sensor(vals)
@@ -2378,24 +2297,10 @@ def _assessment_from_vals(
     emotion = facial_res["emotion"] if facial_res else "Neutral"
     recs    = mgr.recommendations(sensor_res["state"], emotion, future_states)
 
-    shap_sensor_res = None
-    shap_future_res = None
-    if include_shap:
-        try:
-            shap_sensor_res = mgr.explain_shap_sensor(vals)
-        except Exception as exc:
-            print(f"  [shap_sensor] skipped: {exc}")
-        try:
-            shap_future_res = mgr.explain_shap_future(vals)
-        except Exception as exc:
-            print(f"  [shap_future] skipped: {exc}")
-
     return {
         "sensor":          sensor_res,
         "facial":          facial_res,
         "future":          future_res,
-        "shap_sensor":     shap_sensor_res,
-        "shap_future":     shap_future_res,
         "gradcam":         gradcam_res,
         "recommendations": recs,
         "timestamp":       datetime.now().isoformat(),
@@ -2502,7 +2407,7 @@ def api_future(s: SensorInput):
 
 
 @app.get("/api/predict/live", summary="Live mental state from connected biosensors")
-def api_live_prediction(allow_defaults: bool = False):
+def api_live_prediction(allow_defaults: bool = True):
     """
     Start the serial readers if needed, merge latest EEG/GSR/PPG biosignals,
     and immediately run the sensor classifier plus 5-step forecast.
@@ -2513,22 +2418,24 @@ def api_live_prediction(allow_defaults: bool = False):
         allow_defaults=allow_defaults,
     )
 
-    if missing and not allow_defaults:
+    unresolved_missing = [name for name in missing if name not in defaults_used]
+    if unresolved_missing:
+        needs_eeg = any(name in EEG_INPUT_FIELDS for name in unresolved_missing)
         raise HTTPException(
             status_code=409,
             detail={
-                "message": "Waiting for complete live biosignal data",
-                "missing": missing,
+                "message": ATTACH_EEG_MESSAGE if needs_eeg else "Waiting for complete GSR/PPG live data",
+                "missing": unresolved_missing,
                 "live": live,
             },
         )
 
     vals = [sensor_input[name] for name in SENSOR_INPUT_FIELDS]
-    result = _assessment_from_vals(vals, include_shap=False)
+    result = _assessment_from_vals(vals)
     result["sensor_input"] = sensor_input
     result["live"] = {
         **live,
-        "complete": not missing,
+        "complete": not unresolved_missing,
         "missing": missing,
         "defaults_used": defaults_used,
     }
@@ -2536,22 +2443,12 @@ def api_live_prediction(allow_defaults: bool = False):
     return result
 
 
-@app.post("/api/explain/shap/sensor", summary="SHAP feature importance for RNN sensor model")
-def api_shap_sensor(s: SensorInput):
-    return {"shap": mgr.explain_shap_sensor(_sensor_to_vals(s))}
-
-
-@app.post("/api/explain/shap/future", summary="SHAP feature importance for future predictor")
-def api_shap_future(s: SensorInput):
-    return mgr.explain_shap_future(_sensor_to_vals(s))
-
-
 @app.post("/api/explain/gradcam", summary="GradCAM attention heatmap for facial CNN")
 async def api_gradcam(file: UploadFile = File(...)):
     return mgr.gradcam(await file.read())
 
 
-@app.post("/api/predict/complete", summary="Full pipeline: sensor + facial + future + SHAP + recs")
+@app.post("/api/predict/complete", summary="Full pipeline: sensor + facial + future + recs")
 async def api_complete(
     gsr:        float = Form(...),
     ppg:        float = Form(...),
@@ -2583,7 +2480,6 @@ async def api_complete(
         vals,
         facial_res=facial_res,
         gradcam_res=gradcam_res,
-        include_shap=True,
     )
     result["sensor_input"] = dict(zip(SENSOR_INPUT_FIELDS, vals))
     result["mode"] = "manual"
@@ -2716,23 +2612,6 @@ input[type=range]::-webkit-slider-thumb:hover{box-shadow:0 0 14px var(--teal)}
 .dot-stress{background:var(--amber);box-shadow:0 0 8px var(--amber)}.dot-anxiety{background:var(--coral);box-shadow:0 0 8px var(--coral)}
 .dot-panic{background:#ff2d55;box-shadow:0 0 8px #ff2d55;animation:pulse 1.5s infinite}.dot-depression{background:var(--violet);box-shadow:0 0 8px var(--violet)}
 .tl-state{font-size:.78rem;font-weight:600;margin-bottom:8px}.tl-vals{font-size:.66rem;color:var(--text3);font-family:var(--font-mono);line-height:1.8}
-.shap-block{margin-bottom:22px}
-.shap-class-label{font-size:.72rem;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);margin-bottom:10px;display:flex;align-items:center;gap:8px;}
-.shap-class-label::after{content:'';flex:1;height:1px;background:var(--border)}
-.shap-row{display:flex;align-items:center;gap:10px;margin-bottom:7px;font-size:.78rem}
-.shap-name{width:80px;flex-shrink:0;color:var(--text2)}.shap-track{flex:1;height:5px;background:var(--surface3);border-radius:2px;overflow:hidden}
-.shap-fill{height:100%;background:linear-gradient(to right,#7c3aed,#a78bfa);border-radius:2px}
-.shap-val{width:56px;text-align:right;font-family:var(--font-mono);font-size:.72rem;color:var(--text3)}
-.fshap-step{margin-bottom:14px;background:var(--surface2);border-radius:10px;border:1px solid var(--border);overflow:hidden;}
-.fshap-head{padding:10px 14px;display:flex;align-items:center;gap:10px;cursor:pointer;border-bottom:1px solid transparent;transition:border-color .2s;}
-.fshap-head:hover{border-bottom-color:var(--border)}.fshap-step-label{font-family:var(--font-mono);font-size:.75rem;font-weight:500;color:var(--teal)}
-.fshap-state{font-size:.78rem;font-weight:600;margin-left:4px}.fshap-arrow{margin-left:auto;font-size:.7rem;color:var(--text3);transition:transform .2s}
-.fshap-body{padding:14px;display:none}.fshap-body.open{display:block}
-.fshap-head.active .fshap-arrow{transform:rotate(180deg)}
-.fshap-bar-row{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:.75rem}
-.fshap-name{width:80px;flex-shrink:0;color:var(--text2);font-size:.72rem}.fshap-track{flex:1;height:4px;background:var(--surface3);border-radius:2px;overflow:hidden}
-.fshap-fill{height:100%;background:linear-gradient(to right,var(--teal-dim),var(--teal));border-radius:2px}
-.fshap-val{width:56px;text-align:right;font-family:var(--font-mono);font-size:.7rem;color:var(--text3)}
 .change-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:16px}
 @media(max-width:780px){.change-grid{grid-template-columns:repeat(3,1fr)}}
 .change-tile{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px;text-align:center;}
@@ -2775,7 +2654,6 @@ kbd{background:var(--surface2);border:1px solid var(--border2);border-radius:4px
     <div class="chip"><div class="chip-dot pulse" id="d-rnn"></div>RNN Sensor</div>
     <div class="chip"><div class="chip-dot pulse" id="d-pred"></div>Predictor</div>
     <div class="chip"><div class="chip-dot pulse" id="d-scaler"></div>Scaler</div>
-    <div class="chip"><div class="chip-dot pulse" id="d-shap"></div>SHAP</div>
   </div>
 </header>
 <main>
@@ -2878,13 +2756,6 @@ kbd{background:var(--surface2);border:1px solid var(--border2);border-radius:4px
       </div>
     </section>
     <section>
-      <div class="sec-head"><h2>Explainability (XAI)</h2><div class="sec-head-line"></div><span class="sec-badge badge-violet">SHAP</span></div>
-      <div class="grid-2">
-        <div class="card fade-in"><div class="card-head"><div class="card-icon ci-violet">🔍</div><h3>Current State — SHAP Feature Importance</h3></div><div class="card-body" id="shap-sensor-content"><p style="color:var(--text3);font-size:.82rem">Loading SHAP…</p></div></div>
-        <div class="card fade-in"><div class="card-head"><div class="card-icon ci-blue">📊</div><h3>Future Prediction — SHAP per Step</h3></div><div class="card-body" id="shap-future-content"><p style="color:var(--text3);font-size:.82rem">Loading SHAP…</p></div></div>
-      </div>
-    </section>
-    <section>
       <div class="sec-head"><h2>AI Recommendations</h2><div class="sec-head-line"></div><span class="sec-badge badge-teal">Personalised</span></div>
       <div class="card fade-in"><div class="card-head"><div class="card-icon ci-green">💡</div><h3>Health Guidance</h3></div><div class="card-body" id="rec-body"></div></div>
     </section>
@@ -2896,6 +2767,7 @@ let stream=null,blob=null;
 let eegInterval=null, ardInterval=null, liveProcessInterval=null;
 const SENSOR_IDS=['gsr','ppg','delta','theta','low_alpha','high_alpha','low_beta','high_beta','low_gamma','mid_gamma'];
 const SENSOR_LABEL_IDS={gsr:'lv-gsr',ppg:'lv-ppg',delta:'lv-delta',theta:'lv-theta',low_alpha:'lv-la',high_alpha:'lv-ha',low_beta:'lv-lb',high_beta:'lv-hb',low_gamma:'lv-lg',mid_gamma:'lv-mg'};
+const ATTACH_EEG_TEXT='Attach EEG sensors for live values';
 
 async function fetchEEG() {
   try {
@@ -2903,6 +2775,8 @@ async function fetchEEG() {
     if (!res.ok) throw new Error('network error');
     const data = await res.json();
     document.getElementById('d-eeg').className = 'chip-dot ' + (data.online ? 'ok' : '');
+    const chip=document.getElementById('chip-eeg');
+    if(chip){chip.title=data.online?'Live EEG data received':(data.message||data.error||'Attach EEG sensors for live values');}
     if (data.online) {
         ['delta','theta','low_alpha','high_alpha','low_beta','high_beta','low_gamma','mid_gamma'].forEach(k => {
             if (data[k] !== undefined && data[k] !== null) {
@@ -2910,6 +2784,8 @@ async function fetchEEG() {
                 if (el) { el.value = data[k]; syncSlider(k, 'lv-'+(k==='low_alpha'?'la':k==='high_alpha'?'ha':k==='low_beta'?'lb':k==='high_beta'?'hb':k==='low_gamma'?'lg':k==='mid_gamma'?'mg':k), data[k].toFixed(2), ''); }
             }
         });
+    } else if (liveProcessInterval) {
+        setLiveNote(data.message||data.error||'Attach EEG sensors for live values');
     }
   } catch (err) {
     document.getElementById('d-eeg').className = 'chip-dot';
@@ -2957,16 +2833,22 @@ function ensureLiveReaders(){
 async function processLiveSignals(){
   ensureLiveReaders();
   show('results');
-  if(document.getElementById('res-content').classList.contains('hidden'))document.getElementById('spinner').style.display='flex';
+  const noteEl=document.getElementById('live-result-note');
+  if(document.getElementById('res-content').classList.contains('hidden')&&noteEl.classList.contains('hidden'))document.getElementById('spinner').style.display='flex';
   try{
     const res=await fetch('/api/predict/live');
     if(!res.ok){
       const err=await res.json().catch(()=>({detail:'Waiting for live biosignals'}));
       const detail=err.detail||{};
-      const missing=Array.isArray(detail.missing)?detail.missing.join(', '):'sensor channels';
+      const message=detail.message||ATTACH_EEG_TEXT;
+      const missing=Array.isArray(detail.missing)?detail.missing:[];
       const diag=detail.live&&detail.live.arduino_diagnostics?detail.live.arduino_diagnostics:{};
-      const extra=diag.last_parse_error?' · '+diag.last_parse_error:(diag.raw_line?' · Last Arduino line: '+diag.raw_line:'');
-      setLiveNote((detail.message||'Waiting for complete live biosignal data')+': '+missing+extra);
+      let extra='';
+      if(!message.includes('Attach EEG sensors')){
+        extra=': '+(missing.length?missing.join(', '):'sensor channels');
+        extra+=diag.last_parse_error?' · '+diag.last_parse_error:(diag.raw_line?' · Last Arduino line: '+diag.raw_line:'');
+      }
+      setLiveNote(message+extra);
       document.getElementById('spinner').style.display='none';
       return;
     }
@@ -3009,11 +2891,11 @@ function syncSlider(id,lblId,val,unit){document.getElementById(lblId).textConten
 function show(id){document.getElementById(id)?.classList.remove('hidden')}
 function hide(id){document.getElementById(id)?.classList.add('hidden')}
 function updateSensorControls(values){SENSOR_IDS.forEach(id=>{if(values[id]===undefined||values[id]===null)return;const el=document.getElementById(id);if(!el)return;const n=Number(values[id]);el.value=n;const display=id==='gsr'||id==='ppg'?Math.round(n):n.toFixed(2);syncSlider(id,SENSOR_LABEL_IDS[id],display,id==='ppg'?' bpm':'');});}
-function setLiveNote(msg){const el=document.getElementById('live-result-note');if(!el)return;el.textContent=msg;if(msg)show('live-result-note');else hide('live-result-note');}
+function setLiveNote(msg){const el=document.getElementById('live-result-note');if(!el)return;if(el.textContent===msg&&msg)return;if(msg){el.textContent=msg;show('live-result-note');}else{el.textContent='';hide('live-result-note');}}
 function pct(v){return(v*100).toFixed(1)}
 const FILL_CLS=['pf-teal','pf-coral','pf-amber','pf-violet','pf-blue','pf-green'];
 function probBars(el,probs,cls){el.innerHTML='';Object.entries(probs).sort((a,b)=>b[1]-a[1]).forEach(([k,v],i)=>{const c=cls?cls[i%cls.length]:FILL_CLS[i%FILL_CLS.length];el.innerHTML+=`<div class="prob-row"><span class="prob-name">${k}</span><div class="prob-track"><div class="prob-fill ${c}" style="width:${pct(v)}%"></div></div><span class="prob-pct">${pct(v)}%</span></div>`;});}
-async function pollStatus(){try{const d=await(await fetch('/api/status')).json();const map={facial_cnn:'d-cnn',rnn_sensor:'d-rnn',predictor:'d-pred',scaler:'d-scaler',shap_bg:'d-shap'};for(const[k,id] of Object.entries(map)){const dot=document.getElementById(id);if(dot){dot.className='chip-dot '+(d.models[k]?'ok':'pulse');}}}catch(e){}}
+async function pollStatus(){try{const d=await(await fetch('/api/status')).json();const map={facial_cnn:'d-cnn',rnn_sensor:'d-rnn',predictor:'d-pred',scaler:'d-scaler'};for(const[k,id] of Object.entries(map)){const dot=document.getElementById(id);if(dot){dot.className='chip-dot '+(d.models[k]?'ok':'pulse');}}}catch(e){}}
 pollStatus();setInterval(pollStatus,30000);
 async function analyze(e){e.preventDefault();show('results');document.getElementById('spinner').style.display='flex';hide('res-content');const fd=new FormData();['gsr','ppg','delta','theta','low_alpha','high_alpha','low_beta','high_beta','low_gamma','mid_gamma'].forEach(id=>fd.append(id,document.getElementById(id).value));if(blob)fd.append('file',blob,'frame.jpg');try{const res=await fetch('/api/predict/complete',{method:'POST',body:fd});if(!res.ok){const err=await res.json();throw new Error(err.detail||'Server error');}renderResults(await res.json());}catch(err){alert('Assessment failed: '+err.message);}finally{document.getElementById('spinner').style.display='none';}}
 const STATE_ICONS={NORMAL:'✅',LOW_STRESS:'😌',MODERATE_STRESS:'😟',HIGH_ANXIETY:'😰',PANIC_STATE:'🆘',DEPRESSION:'💙'};
@@ -3030,8 +2912,6 @@ function renderResults(d,opts={}){
   const sg=document.getElementById('sensor-tiles');sg.innerHTML=tk.map((k,i)=>`<div class="stile"><div class="sval">${k==='gsr'?Math.round(inp[k]):parseFloat(inp[k]).toFixed(2)}</div><div class="slbl">${tn[i]}</div></div>`).join('');
   if(d.facial){hide('no-facial');show('yes-facial');document.getElementById('emotion-label').textContent=d.facial.emotion;document.getElementById('emotion-conf').textContent=pct(d.facial.confidence)+'%';document.getElementById('emotion-icon').textContent={Angry:'😠',Disgust:'🤢',Fear:'😨',Happy:'😊',Neutral:'😐',Sad:'😢',Surprise:'😲'}[d.facial.emotion]||'😐';probBars(document.getElementById('emotion-probs'),d.facial.probabilities);if(d.gradcam&&d.gradcam.heatmap){show('gradcam-wrap');renderGradCam(d.gradcam.heatmap,d.gradcam.shape);}}else{show('no-facial');hide('yes-facial');hide('gradcam-wrap');}
   renderTimeline(d.future,inp);
-  if(d.shap_sensor)renderShapSensor(d.shap_sensor);else document.getElementById('shap-sensor-content').innerHTML='<p style="color:var(--text3);font-size:.8rem">SHAP unavailable</p>';
-  if(d.shap_future)renderShapFuture(d.shap_future,d.future);else document.getElementById('shap-future-content').innerHTML='<p style="color:var(--text3);font-size:.8rem">SHAP unavailable</p>';
   renderRec(d.recommendations);
   show('res-content');if(opts.scroll!==false)document.getElementById('results').scrollIntoView({behavior:'smooth',block:'start'});
 }
@@ -3044,9 +2924,6 @@ function renderTimeline(steps,currentInputs){
   const dot_cls={NORMAL:'dot-normal',LOW_STRESS:'dot-low',MODERATE_STRESS:'dot-stress',HIGH_ANXIETY:'dot-anxiety',PANIC_STATE:'dot-panic',DEPRESSION:'dot-depression'};
   document.getElementById('timeline').innerHTML=steps.map(step=>{const dc=dot_cls[step.state]||'dot-normal';const col=STATE_COLORS[step.state]||'var(--text2)';const vals=Object.entries(step).filter(([k])=>!['step','state','state_index'].includes(k)).map(([k,v])=>`${k.toUpperCase().substring(0,3)}: ${typeof v==='number'?v.toFixed(2):v}`).slice(0,5).join('<br>');return `<div class="tl-step"><div class="tl-num">Step ${step.step}</div><div class="tl-dot ${dc}"></div><div class="tl-state" style="color:${col}">${step.state.replace(/_/g,' ')}</div><div class="tl-vals">${vals}</div></div>`;}).join('');
 }
-function renderShapSensor(shap){const el=document.getElementById('shap-sensor-content');el.innerHTML='';for(const[cls,feats] of Object.entries(shap)){const maxV=Math.max(...Object.values(feats));let rows='';Object.entries(feats).sort((a,b)=>b[1]-a[1]).forEach(([f,v])=>{const p=maxV>0?(v/maxV*100).toFixed(1):0;rows+=`<div class="shap-row"><span class="shap-name">${f}</span><div class="shap-track"><div class="shap-fill" style="width:${p}%"></div></div><span class="shap-val">${v.toFixed(4)}</span></div>`;});el.innerHTML+=`<div class="shap-block"><div class="shap-class-label">${cls.replace(/_/g,' ')}</div>${rows}</div>`;}}
-function renderShapFuture(shapData,futureSteps){const el=document.getElementById('shap-future-content');el.innerHTML='';const agg=shapData.aggregate_importance;const maxA=Math.max(...Object.values(agg));let aggHtml='<div class="shap-block"><div class="shap-class-label">Aggregate (all 5 steps)</div>';Object.entries(agg).sort((a,b)=>b[1]-a[1]).forEach(([f,v])=>{const p=maxA>0?(v/maxA*100).toFixed(1):0;aggHtml+=`<div class="shap-row"><span class="shap-name">${f}</span><div class="shap-track"><div class="shap-fill" style="width:${p}%;background:linear-gradient(to right,var(--teal-dim),var(--teal))"></div></div><span class="shap-val">${v.toFixed(4)}</span></div>`;});aggHtml+='</div>';el.innerHTML=aggHtml;shapData.per_step.forEach((stepData,i)=>{const state=(futureSteps&&futureSteps[i])?futureSteps[i].state.replace(/_/g,' '):'';const col=futureSteps&&futureSteps[i]?STATE_COLORS[futureSteps[i].state]:'var(--text2)';const maxS=Math.max(...Object.values(stepData.shap));let barHtml='';Object.entries(stepData.shap).sort((a,b)=>b[1]-a[1]).forEach(([f,v])=>{const p=maxS>0?(v/maxS*100).toFixed(1):0;barHtml+=`<div class="fshap-bar-row"><span class="fshap-name">${f}</span><div class="fshap-track"><div class="fshap-fill" style="width:${p}%"></div></div><span class="fshap-val">${v.toFixed(4)}</span></div>`;});el.innerHTML+=`<div class="fshap-step"><div class="fshap-head" onclick="toggleFshap(this)"><span class="fshap-step-label">Step ${stepData.step}</span><span class="fshap-state" style="color:${col}">${state}</span><span class="fshap-arrow">▼</span></div><div class="fshap-body">${barHtml}</div></div>`;});}
-function toggleFshap(head){head.classList.toggle('active');head.nextElementSibling.classList.toggle('open');}
 function renderGradCam(hm,shape){const canvas=document.getElementById('gradcam-canvas');canvas.style.display='block';const[H,W]=shape;canvas.width=W;canvas.height=H;const ctx=canvas.getContext('2d');const img=ctx.createImageData(W,H);for(let i=0;i<hm.length;i++){const v=hm[i];img.data[i*4]=Math.round(Math.min(255,v*2*255));img.data[i*4+1]=Math.round(Math.min(255,(1-Math.abs(v-.5)*2)*180));img.data[i*4+2]=Math.round(Math.min(255,(1-v)*2*255));img.data[i*4+3]=160;}ctx.putImageData(img,0,0);}
 function renderRec(r){const body=document.getElementById('rec-body');const tClass=r.trend==='worsening'?'trend-worsen':r.trend==='improving'?'trend-improve':'trend-stable';const tIcon=r.trend==='worsening'?'📉':r.trend==='improving'?'📈':'📊';let html=`<div class="trend-badge ${tClass}">${tIcon} ${r.trend_message}</div>`;if(r.emotion_tip)html+=`<div class="emotion-tip">${r.emotion_tip}</div>`;html+=`<div class="rec-section"><div class="rec-label">🚨 First Aid <span class="rec-tag tag-red">Immediate</span></div><ul class="rec-list rec-first-aid">${r.first_aid.map(i=>`<li>${i}</li>`).join('')}</ul></div>`;html+=`<div class="rec-section"><div class="rec-label">🌿 Lifestyle <span class="rec-tag tag-green">Daily</span></div><ul class="rec-list rec-lifestyle">${r.lifestyle.map(i=>`<li>${i}</li>`).join('')}</ul></div>`;html+=`<div class="rec-section"><div class="rec-label">🩺 Professional <span class="rec-tag tag-blue">When needed</span></div><ul class="rec-list rec-professional">${r.professional.map(i=>`<li>${i}</li>`).join('')}</ul></div>`;body.innerHTML=html;}
 </script>
