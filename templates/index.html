@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MindSense AI — Live Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#070b14;--surface:#0d1220;--surface2:#131929;--surface3:#1a2235;
+  --border:#1e2d47;--border2:#263550;
+  --teal:#00e5cc;--teal-dim:#00b4a2;--teal-glow:rgba(0,229,204,.12);
+  --coral:#ff5e7d;--coral-dim:#cc3d5c;--coral-glow:rgba(255,94,125,.10);
+  --amber:#ffb547;--violet:#9f6ef5;--violet-glow:rgba(159,110,245,.10);
+  --blue:#4a9eff;--green:#2ecc8a;--green-glow:rgba(46,204,138,.10);
+  --text:#e8edf5;--text2:#8a95a8;--text3:#4a5568;
+  --font-body:'Space Grotesk',sans-serif;
+  --font-serif:'Instrument Serif',serif;
+  --font-mono:'JetBrains Mono',monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:var(--font-body);background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden;}
+body::before{content:'';position:fixed;inset:0;pointer-events:none;
+  background:radial-gradient(ellipse 80% 50% at 10% 0%,rgba(0,229,204,.05) 0%,transparent 60%),
+             radial-gradient(ellipse 60% 40% at 90% 100%,rgba(159,110,245,.05) 0%,transparent 60%);z-index:0;}
+
+/* Registration Overlay */
+#overlay {
+  position: fixed; inset: 0; background: rgba(7,11,20,0.95); z-index: 1000;
+  display: flex; align-items: center; justify-content: center; backdrop-filter: blur(10px);
+}
+.modal {
+  background: var(--surface); border: 1px solid var(--border); padding: 40px; border-radius: 16px;
+  width: 400px; max-width: 90%; text-align: center; box-shadow: 0 20px 40px rgba(0,0,0,0.6);
+}
+.modal h1 { font-family: var(--font-serif); font-size: 2.2rem; font-style: italic; color: var(--teal); margin-bottom: 10px; }
+.modal p { color: var(--text2); font-size: 0.9rem; margin-bottom: 30px; }
+.input-group { margin-bottom: 15px; text-align: left; }
+.input-group label { display: block; font-size: 0.75rem; color: var(--text2); margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.05em; }
+.input-group input { 
+  width: 100%; background: var(--surface2); border: 1px solid var(--border2); color: var(--text);
+  padding: 12px; border-radius: 8px; font-family: var(--font-body); font-size: 0.95rem; outline: none; transition: 0.2s;
+}
+.input-group input:focus { border-color: var(--teal); box-shadow: 0 0 0 2px var(--teal-glow); }
+.btn {
+  width: 100%; padding: 14px; background: linear-gradient(135deg, var(--teal-dim), var(--teal));
+  color: #000; font-weight: bold; border: none; border-radius: 8px; font-family: var(--font-body);
+  font-size: 1rem; cursor: pointer; transition: 0.2s; margin-top: 10px;
+}
+.btn:hover { filter: brightness(1.1); transform: translateY(-1px); box-shadow: 0 8px 20px var(--teal-glow); }
+
+/* Main App */
+header{position:sticky;top:0;z-index:100;background:rgba(7,11,20,.85);backdrop-filter:blur(20px);
+  border-bottom:1px solid var(--border);padding:0 40px;height:64px;display:flex;align-items:center;justify-content:space-between;}
+.logo{display:flex;align-items:center;gap:10px;font-size:1.15rem;font-weight:700;letter-spacing:-.02em;}
+.logo-mark{width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,var(--teal),var(--violet));display:flex;align-items:center;justify-content:center;font-size:.9rem;}
+.logo-name em{color:var(--teal);font-style:normal}
+main{max-width:1400px;margin:0 auto;padding:40px;position:relative;z-index:1}
+
+.grid-layout { display: grid; grid-template-columns: 350px 1fr; gap: 30px; }
+@media(max-width: 900px) { .grid-layout { grid-template-columns: 1fr; } }
+
+.card{background: var(--surface); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; margin-bottom: 20px;}
+.card-head{padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; background: var(--surface2);}
+.card-head h3{font-size: 0.95rem; font-weight: 600; color: var(--text); letter-spacing: 0.02em;}
+.card-icon{width: 30px; height: 30px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 0.9rem;}
+.ci-teal{background: var(--teal-glow); border: 1px solid rgba(0,229,204,.2)}
+.ci-coral{background: var(--coral-glow); border: 1px solid rgba(255,94,125,.2)}
+.card-body{padding: 20px;}
+
+/* WebCam */
+#video-container { width: 100%; aspect-ratio: 4/3; background: #000; border-radius: 12px; overflow: hidden; position: relative;}
+#video { width: 100%; height: 100%; object-fit: cover; }
+.emotion-overlay { position: absolute; bottom: 10px; left: 10px; background: rgba(0,0,0,0.7); padding: 5px 12px; border-radius: 20px; border: 1px solid var(--border2); font-size: 0.85rem; font-weight: bold; color: var(--teal); backdrop-filter: blur(5px);}
+
+/* Sensor Grid */
+.sensor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px;}
+.s-box { background: var(--surface2); border: 1px solid var(--border); padding: 15px; border-radius: 12px; text-align: center; }
+.s-val { font-family: var(--font-mono); font-size: 1.8rem; font-weight: 600; color: var(--coral); }
+.s-lbl { font-size: 0.75rem; color: var(--text3); font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; margin-top: 5px;}
+
+.eeg-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.e-box { background: var(--surface2); border: 1px solid var(--border); padding: 10px 5px; border-radius: 8px; text-align: center; }
+.e-val { font-family: var(--font-mono); font-size: 0.9rem; color: var(--blue); }
+.e-lbl { font-size: 0.65rem; color: var(--text3); font-weight: 600; text-transform: uppercase; margin-top: 3px; }
+
+/* Mental State */
+.state-box { text-align: center; padding: 20px 0;}
+.state-name { font-size: 2.5rem; font-family: var(--font-serif); font-style: italic; color: var(--teal); line-height: 1.2; margin-bottom: 5px;}
+.state-conf { font-family: var(--font-mono); font-size: 0.9rem; color: var(--text2); }
+
+/* Timeline */
+.timeline { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 10px;}
+.tl-step { flex: 1; min-width: 120px; background: var(--surface2); border: 1px solid var(--border); padding: 15px; border-radius: 12px; text-align: center;}
+.tl-num { font-family: var(--font-mono); font-size: 0.7rem; color: var(--text3); margin-bottom: 10px;}
+.tl-state { font-size: 0.85rem; font-weight: 600; color: var(--amber);}
+
+/* Recs */
+.rec-list { list-style: none; display: flex; flex-direction: column; gap: 10px; }
+.rec-list li { padding: 12px 16px; background: var(--surface2); border-left: 3px solid var(--teal); border-radius: 8px; font-size: 0.9rem; line-height: 1.5;}
+
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<!-- Registration Overlay -->
+<div id="overlay">
+  <div class="modal">
+    <h1>MindSense AI</h1>
+    <p>Please enter your details to begin the live assessment.</p>
+    <form id="reg-form">
+      <div class="input-group">
+        <label>Full Name</label>
+        <input type="text" id="reg-name" required placeholder="Jane Doe">
+      </div>
+      <div class="input-group">
+        <label>Phone Number (Optional)</label>
+        <input type="text" id="reg-phone" placeholder="+1 234 567 8900">
+      </div>
+      <div class="input-group">
+        <label>Email Address (Optional)</label>
+        <input type="email" id="reg-email" placeholder="jane@example.com">
+      </div>
+      <button type="submit" class="btn" id="reg-btn">Start Live Session</button>
+    </form>
+  </div>
+</div>
+
+<!-- Main App -->
+<header>
+  <div class="logo">
+    <div class="logo-mark">🧠</div>
+    <div class="logo-name">Mind<em>Sense</em> AI</div>
+  </div>
+  <div id="user-display" style="font-size: 0.9rem; color: var(--text2); font-weight: 500;"></div>
+</header>
+
+<main>
+  <div class="grid-layout">
+    
+    <!-- Left Column: Sensors & Camera -->
+    <div class="col-left">
+      <div class="card">
+        <div class="card-head"><div class="card-icon ci-coral">📸</div><h3>Facial Emotion Feed</h3></div>
+        <div class="card-body" style="padding: 10px;">
+          <div id="video-container">
+            <video id="video" autoplay playsinline muted></video>
+            <div class="emotion-overlay" id="emotion-lbl">Neutral (0%)</div>
+          </div>
+          <canvas id="canvas" class="hidden"></canvas>
+        </div>
+      </div>
+      
+      <div class="card">
+        <div class="card-head"><div class="card-icon ci-teal">⚡</div><h3>Live Biometrics</h3></div>
+        <div class="card-body">
+          <div class="sensor-grid">
+            <div class="s-box"><div class="s-val" id="val-gsr">0</div><div class="s-lbl">GSR Raw</div></div>
+            <div class="s-box"><div class="s-val" id="val-ppg">0</div><div class="s-lbl">HR (BPM)</div></div>
+          </div>
+          <h4 style="font-size: 0.75rem; color: var(--text3); text-transform: uppercase; margin-bottom: 10px; letter-spacing: 0.05em;">Normalized EEG Bands</h4>
+          <div class="eeg-grid">
+            <div class="e-box"><div class="e-val" id="val-delta">0.00</div><div class="e-lbl">Delta</div></div>
+            <div class="e-box"><div class="e-val" id="val-theta">0.00</div><div class="e-lbl">Theta</div></div>
+            <div class="e-box"><div class="e-val" id="val-la">0.00</div><div class="e-lbl">Low Alpha</div></div>
+            <div class="e-box"><div class="e-val" id="val-ha">0.00</div><div class="e-lbl">High Alpha</div></div>
+            <div class="e-box"><div class="e-val" id="val-lb">0.00</div><div class="e-lbl">Low Beta</div></div>
+            <div class="e-box"><div class="e-val" id="val-hb">0.00</div><div class="e-lbl">High Beta</div></div>
+            <div class="e-box"><div class="e-val" id="val-lg">0.00</div><div class="e-lbl">Low Gamma</div></div>
+            <div class="e-box"><div class="e-val" id="val-mg">0.00</div><div class="e-lbl">Mid Gamma</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Right Column: Predictions & Recs -->
+    <div class="col-right">
+      <div class="card">
+        <div class="card-head"><div class="card-icon ci-teal">🧠</div><h3>Mental State Classification</h3></div>
+        <div class="card-body">
+          <div class="state-box">
+            <div class="state-name" id="state-lbl">ANALYZING...</div>
+            <div class="state-conf" id="state-conf">Confidence: --%</div>
+          </div>
+        </div>
+      </div>
+      
+      <div class="card">
+        <div class="card-head"><div class="card-icon" style="background: var(--amber); color: #000;">🔮</div><h3 style="color:var(--text);">5-Step Physiological Forecast</h3></div>
+        <div class="card-body">
+          <div class="timeline" id="timeline-container">
+            <!-- Populated via JS -->
+          </div>
+        </div>
+      </div>
+      
+      <div class="card">
+        <div class="card-head"><div class="card-icon ci-teal">💡</div><h3>AI Health Recommendations</h3></div>
+        <div class="card-body">
+          <ul class="rec-list" id="rec-list">
+            <li>Analyzing your live physiological data to provide personalized recommendations...</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    
+  </div>
+</main>
+
+<script>
+let userId = "";
+
+// 1. Handle Registration
+document.getElementById('reg-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById('reg-btn');
+  btn.textContent = "Registering...";
+  
+  const fd = new FormData();
+  fd.append("name", document.getElementById('reg-name').value);
+  fd.append("phone", document.getElementById('reg-phone').value);
+  fd.append("email", document.getElementById('reg-email').value);
+  
+  try {
+    const res = await fetch('/api/register', { method: 'POST', body: fd });
+    const data = await res.json();
+    userId = data.id || "local_user";
+    
+    document.getElementById('user-display').textContent = `Patient: ${document.getElementById('reg-name').value}`;
+    document.getElementById('overlay').classList.add('hidden');
+    
+    // Start Data Loops
+    startCamera();
+    setInterval(fetchLiveData, 1000);
+    setInterval(sendFrameForEmotion, 2000);
+    
+  } catch (err) {
+    alert("Registration failed. Running in local mode.");
+    userId = "local_user";
+    document.getElementById('user-display').textContent = `Patient: ${document.getElementById('reg-name').value}`;
+    document.getElementById('overlay').classList.add('hidden');
+    startCamera();
+    setInterval(fetchLiveData, 1000);
+    setInterval(sendFrameForEmotion, 2000);
+  }
+});
+
+// 2. Camera Setup
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+let stream = null;
+
+async function startCamera() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 } });
+    video.srcObject = stream;
+  } catch (e) {
+    console.error("Camera access denied or unavailable", e);
+    document.getElementById('emotion-lbl').textContent = "Camera Error";
+  }
+}
+
+async function sendFrameForEmotion() {
+  if (!stream) return;
+  
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  
+  canvas.toBlob(async (blob) => {
+    if(!blob) return;
+    const fd = new FormData();
+    fd.append("file", blob, "frame.jpg");
+    
+    try {
+      const res = await fetch('/api/predict_facial', { method: 'POST', body: fd });
+      const data = await res.json();
+      const conf = (data.confidence * 100).toFixed(1);
+      document.getElementById('emotion-lbl').textContent = `${data.emotion} (${conf}%)`;
+    } catch (e) {}
+  }, 'image/jpeg', 0.8);
+}
+
+// 3. Fetch Live Data from Backend Arduino/EEG threads
+async function fetchLiveData() {
+  try {
+    const res = await fetch(`/api/live_data?user_id=${userId}`);
+    const data = await res.json();
+    
+    // Update Sensors
+    document.getElementById('val-gsr').textContent = Math.round(data.sensors.gsr);
+    document.getElementById('val-ppg').textContent = Math.round(data.sensors.ppg);
+    
+    document.getElementById('val-delta').textContent = data.sensors.delta.toFixed(2);
+    document.getElementById('val-theta').textContent = data.sensors.theta.toFixed(2);
+    document.getElementById('val-la').textContent = data.sensors.low_alpha.toFixed(2);
+    document.getElementById('val-ha').textContent = data.sensors.high_alpha.toFixed(2);
+    document.getElementById('val-lb').textContent = data.sensors.low_beta.toFixed(2);
+    document.getElementById('val-hb').textContent = data.sensors.high_beta.toFixed(2);
+    document.getElementById('val-lg').textContent = data.sensors.low_gamma.toFixed(2);
+    document.getElementById('val-mg').textContent = data.sensors.mid_gamma.toFixed(2);
+    
+    // Update State
+    const stateName = data.state.state.replace(/_/g, ' ');
+    const stateConf = (data.state.confidence * 100).toFixed(1);
+    
+    const stateLbl = document.getElementById('state-lbl');
+    stateLbl.textContent = stateName;
+    document.getElementById('state-conf').textContent = `Confidence: ${stateConf}%`;
+    
+    if(stateName.includes("PANIC")) stateLbl.style.color = "var(--coral)";
+    else if(stateName.includes("ANXIETY")) stateLbl.style.color = "var(--coral)";
+    else if(stateName.includes("STRESS")) stateLbl.style.color = "var(--amber)";
+    else if(stateName.includes("DEPRESSION")) stateLbl.style.color = "var(--violet)";
+    else stateLbl.style.color = "var(--teal)";
+    
+    // Update Future Timeline
+    const tlContainer = document.getElementById('timeline-container');
+    tlContainer.innerHTML = "";
+    data.future.forEach(step => {
+      const stepHtml = `
+        <div class="tl-step">
+          <div class="tl-num">Step ${step.step}</div>
+          <div class="tl-state">${step.state.replace(/_/g, ' ')}</div>
+        </div>
+      `;
+      tlContainer.innerHTML += stepHtml;
+    });
+    
+    // Update Recs
+    const recList = document.getElementById('rec-list');
+    recList.innerHTML = "";
+    data.recommendations.forEach(rec => {
+      recList.innerHTML += `<li>${rec}</li>`;
+    });
+    
+  } catch (e) {
+    console.error("Failed to fetch live data", e);
+  }
+}
+</script>
+</body>
+</html>
