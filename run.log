@@ -1,0 +1,18 @@
+===================================================
+  MindSense AI - Setup and Run
+===================================================
+
+[1] Installing required packages...
+Python was not found; run without arguments to install from the Microsoft Store, or disable this shortcut from Settings > Apps > Advanced app settings > App execution aliases.
+WARNING: 'python' command failed. Trying 'py' instead...
+'py' is not recognized as an internal or external command,
+operable program or batch file.
+
+[2] Starting the Web Server...
+Python was not found; run without arguments to install from the Microsoft Store, or disable this shortcut from Settings > Apps > Advanced app settings > App execution aliases.
+WARNING: 'python' failed to start the server. Trying 'py'...
+'py' is not recognized as an internal or external command,
+operable program or batch file.
+
+If the server crashed, please read the error message above!
+Press any key to continue . . . 

@@ -1,0 +1,12 @@
+import pandas as pd
+df = pd.read_csv('mental_health_dataset_50000.csv', nrows=5)
+print(df.columns.tolist())
+print(df.head())
+print()
+print('Stats:')
+df2 = pd.read_csv('mental_health_dataset_50000.csv')
+print(df2.describe())
+print()
+print('GSR range:', df2['GSR'].min(), '-', df2['GSR'].max())
+print('PPG range:', df2['PPG'].min(), '-', df2['PPG'].max())
+print('Labels:', df2['Label'].unique().tolist())

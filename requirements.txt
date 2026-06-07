@@ -19,6 +19,9 @@ scipy
 opencv-python
 Pillow
 
+# XAI
+shap
+
 # FastAPI Server
 fastapi
 uvicorn[standard]
@@ -28,5 +31,6 @@ pydantic
 # Utilities
 matplotlib
 seaborn
-tqdm
-pyserial
+tqdm 
+customtkinter
+supabase
