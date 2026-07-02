@@ -1,6 +1,11 @@
 import os
 import json
-from supabase import create_client, Client
+
+try:
+    from supabase import create_client, Client
+except ImportError:
+    create_client = None
+    Client = object
 
 SUPABASE_URL = "https://gkdmxcxluhkzvcdefbju.supabase.co"
 SUPABASE_KEY = "sb_secret_i6b-WB9yjaVHakpD2n39Pw_CHCH2yKt"
@@ -9,6 +14,10 @@ class SupabaseManager:
     def __init__(self):
         self.client: Client = None
         self.connected = False
+        if create_client is None:
+            print("Supabase package not installed; using local_user fallback.")
+            return
+
         try:
             self.client = create_client(SUPABASE_URL, SUPABASE_KEY)
             self.connected = True

@@ -1,5 +1,6 @@
 import os
 import pickle
+import collections
 import numpy as np
 import cv2
 import tensorflow as tf
@@ -10,7 +11,7 @@ warnings.filterwarnings("ignore")
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 tf.get_logger().setLevel("ERROR")
 
-BASE_PATH = r"d:\fyp\Antigravitity\prediction model"
+BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(BASE_PATH, "models")
 
 IMG_SIZE = 48
@@ -38,6 +39,8 @@ class InferenceEngine:
         self.predictor_model = None
         self.scaler = None
         self.le = None
+        self.face_cascades = []
+        self.emotion_prob_history = collections.deque(maxlen=5)
         
         self.status = {
             "rnn": False,
@@ -45,6 +48,63 @@ class InferenceEngine:
             "predictor": False,
             "scaler": False
         }
+        self._load_face_detectors()
+
+    def _load_face_detectors(self):
+        cascade_names = [
+            "haarcascade_frontalface_default.xml",
+            "haarcascade_frontalface_alt2.xml",
+        ]
+        for name in cascade_names:
+            path = os.path.join(cv2.data.haarcascades, name)
+            detector = cv2.CascadeClassifier(path)
+            if not detector.empty():
+                self.face_cascades.append(detector)
+
+    def _largest_face(self, gray: np.ndarray):
+        h, w = gray.shape[:2]
+        min_size = max(36, min(h, w) // 8)
+        for detector in self.face_cascades:
+            faces = detector.detectMultiScale(
+                gray,
+                scaleFactor=1.08,
+                minNeighbors=5,
+                minSize=(min_size, min_size),
+                flags=cv2.CASCADE_SCALE_IMAGE,
+            )
+            if len(faces):
+                return max(faces, key=lambda box: box[2] * box[3])
+        return None
+
+    def _crop_face(self, gray: np.ndarray, face_box):
+        h, w = gray.shape[:2]
+        x, y, fw, fh = [int(v) for v in face_box]
+        pad = int(max(fw, fh) * 0.22)
+        cx, cy = x + fw // 2, y + fh // 2
+        side = int(max(fw, fh) + pad * 2)
+        x1 = max(0, cx - side // 2)
+        y1 = max(0, cy - side // 2)
+        x2 = min(w, x1 + side)
+        y2 = min(h, y1 + side)
+        x1 = max(0, x2 - side)
+        y1 = max(0, y2 - side)
+        return gray[y1:y2, x1:x2], (x1, y1, x2 - x1, y2 - y1)
+
+    def _preprocess_face(self, frame):
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.equalizeHist(gray)
+        face_box = self._largest_face(gray)
+        if face_box is None:
+            return None, None
+
+        face, expanded_box = self._crop_face(gray, face_box)
+        if face.size == 0:
+            return None, None
+
+        resized = cv2.resize(face, (IMG_SIZE, IMG_SIZE), interpolation=cv2.INTER_AREA)
+        resized = cv2.equalizeHist(resized)
+        arr = resized.astype(np.float32) / 255.0
+        return arr.reshape(1, IMG_SIZE, IMG_SIZE, 1), expanded_box
         
     def load_models(self):
         print("Loading ML models...")
@@ -128,22 +188,44 @@ class InferenceEngine:
         
     def predict_facial(self, frame) -> dict:
         if not self.status["facial"] or frame is None:
-            return {"emotion": "Neutral", "confidence": 0.0}
-            
-        # Convert BGR to Grayscale
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        resized = cv2.resize(gray, (IMG_SIZE, IMG_SIZE))
-        eq = cv2.equalizeHist(resized)
-        
-        arr = np.array(eq, dtype=np.float32) / 255.0
-        arr = arr.reshape(1, IMG_SIZE, IMG_SIZE, 1)
-        
-        probs = self.facial_model.predict(arr, verbose=0)[0]
-        idx = int(np.argmax(probs))
-        
+            return {
+                "emotion": "Neutral",
+                "confidence": 0.0,
+                "probabilities": {name: 0.0 for name in EMOTION_DISPLAY},
+                "face_detected": False,
+            }
+
+        arr, face_box = self._preprocess_face(frame)
+        if arr is None:
+            self.emotion_prob_history.clear()
+            return {
+                "emotion": "No face detected",
+                "confidence": 0.0,
+                "probabilities": {name: 0.0 for name in EMOTION_DISPLAY},
+                "face_detected": False,
+            }
+
+        probs = self.facial_model.predict(arr, verbose=0)[0].astype(np.float32)
+        probs = probs / max(float(probs.sum()), 1e-8)
+        self.emotion_prob_history.append(probs)
+        smoothed_probs = np.mean(np.array(self.emotion_prob_history), axis=0)
+        smoothed_probs = smoothed_probs / max(float(smoothed_probs.sum()), 1e-8)
+        idx = int(np.argmax(smoothed_probs))
+
+        x, y, w, h = face_box
+        margin = float(smoothed_probs[idx] - np.partition(smoothed_probs, -2)[-2])
+        probabilities = {
+            EMOTION_DISPLAY[i]: float(smoothed_probs[i])
+            for i in range(len(EMOTION_DISPLAY))
+        }
+
         return {
             "emotion": EMOTION_DISPLAY[idx],
-            "confidence": float(probs[idx])
+            "confidence": float(smoothed_probs[idx]),
+            "probabilities": probabilities,
+            "face_detected": True,
+            "face_box": {"x": x, "y": y, "w": w, "h": h},
+            "margin": margin,
         }
 
     def predict_future(self, vals: list[float]) -> list:
