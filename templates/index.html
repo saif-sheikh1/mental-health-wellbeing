@@ -1,0 +1,2024 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MindSense AI - Live Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#f6fbff;
+  --paper:#05070d;
+  --paper-strong:#0a1018;
+  --card:rgba(9,16,26,.78);
+  --card-solid:#0b111d;
+  --line:rgba(131,239,255,.2);
+  --line-strong:rgba(131,239,255,.38);
+  --muted:#8da1b7;
+  --soft:rgba(255,255,255,.045);
+  --teal:#28f8dc;
+  --coral:#ff5f82;
+  --amber:#ffc857;
+  --violet:#a98cff;
+  --green:#37f29a;
+  --blue:#62a8ff;
+  --cyan-glow:0 0 26px rgba(40,248,220,.22);
+  --rose-glow:0 0 26px rgba(255,95,130,.18);
+  --shadow:0 22px 70px rgba(0,0,0,.46);
+  --radius:8px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{
+  min-height:100vh;
+  background:
+    linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px),
+    linear-gradient(180deg,rgba(255,255,255,.035) 1px,transparent 1px),
+    linear-gradient(140deg,rgba(40,248,220,.12),transparent 32%),
+    linear-gradient(320deg,rgba(169,140,255,.12),transparent 36%),
+    var(--paper);
+  background-size:72px 72px,72px 72px,auto,auto,auto;
+  color:var(--ink);
+  font-family:"DM Sans",system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  overflow-x:hidden;
+}
+body::before{
+  content:"";
+  position:fixed;
+  inset:0;
+  z-index:-1;
+  pointer-events:none;
+  background:
+    linear-gradient(180deg,rgba(255,255,255,.055),transparent 1px);
+  background-size:100% 4px;
+  mask-image:linear-gradient(180deg,rgba(0,0,0,.75),transparent 82%);
+}
+body::after{
+  content:"";
+  position:fixed;
+  inset:0;
+  z-index:-1;
+  pointer-events:none;
+  background:linear-gradient(110deg,transparent 0%,rgba(40,248,220,.07) 46%,transparent 58%);
+  transform:translateX(-100%);
+  animation:sweep 8s linear infinite;
+}
+button,input{font:inherit}
+button{border:0}
+.hidden{display:none!important}
+.fade-in{animation:fadeIn .35s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes sweep{to{transform:translateX(100%)}}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.42;transform:scale(.82)}}
+@keyframes borderFlow{to{background-position:200% 0}}
+@keyframes gridShift{to{background-position:160px 120px}}
+
+#overlay{
+  position:fixed;
+  inset:0;
+  z-index:1000;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:24px;
+  background:
+    linear-gradient(90deg,rgba(40,248,220,.04) 1px,transparent 1px),
+    linear-gradient(180deg,rgba(255,255,255,.04) 1px,transparent 1px),
+    rgba(2,5,10,.9);
+  background-size:42px 42px;
+  backdrop-filter:blur(16px);
+}
+.modal{
+  width:min(440px,100%);
+  background:var(--card);
+  border:1px solid var(--line-strong);
+  border-radius:var(--radius);
+  box-shadow:var(--shadow),var(--cyan-glow);
+  padding:30px;
+  position:relative;
+  overflow:hidden;
+}
+.modal::before,.card::before,.signal-hero::before{
+  content:"";
+  position:absolute;
+  inset:0;
+  pointer-events:none;
+  background:linear-gradient(120deg,transparent,rgba(255,255,255,.08),transparent);
+  transform:translateX(-120%);
+  animation:sweep 7s linear infinite;
+}
+.modal-mark{
+  width:54px;
+  height:54px;
+  display:grid;
+  place-items:center;
+  border-radius:var(--radius);
+  background:linear-gradient(135deg,rgba(40,248,220,.2),rgba(169,140,255,.16));
+  border:1px solid rgba(40,248,220,.3);
+  margin:0 auto 18px;
+  font-size:1.7rem;
+  box-shadow:var(--cyan-glow);
+}
+.modal h1{
+  font-family:"Syne",sans-serif;
+  font-size:1.9rem;
+  line-height:1.05;
+  text-align:center;
+  letter-spacing:0;
+}
+.modal h1 span{color:var(--teal)}
+.modal p{
+  color:var(--muted);
+  text-align:center;
+  margin:10px 0 24px;
+  font-size:.95rem;
+}
+.input-group{margin-bottom:14px}
+.input-group label{
+  display:block;
+  color:var(--muted);
+  font-size:.75rem;
+  font-weight:700;
+  letter-spacing:.05em;
+  margin-bottom:6px;
+  text-transform:uppercase;
+}
+.input-group input{
+  width:100%;
+  height:44px;
+  border:1px solid var(--line);
+  border-radius:var(--radius);
+  background:rgba(255,255,255,.055);
+  color:var(--ink);
+  outline:none;
+  padding:0 12px;
+}
+.input-group input::placeholder{color:rgba(141,161,183,.58)}
+.input-group input:focus{border-color:var(--teal);box-shadow:0 0 0 3px rgba(40,248,220,.14)}
+
+header{
+  position:sticky;
+  top:0;
+  z-index:100;
+  min-height:72px;
+  background:rgba(5,7,13,.78);
+  color:var(--ink);
+  border-bottom:1px solid var(--line);
+  backdrop-filter:blur(18px);
+}
+.topbar{
+  max-width:1440px;
+  min-height:72px;
+  margin:0 auto;
+  padding:14px 32px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:18px;
+}
+.logo{
+  display:flex;
+  align-items:center;
+  gap:12px;
+  min-width:max-content;
+}
+.logo-mark{
+  width:38px;
+  height:38px;
+  display:grid;
+  place-items:center;
+  border-radius:var(--radius);
+  background:linear-gradient(135deg,rgba(40,248,220,.22),rgba(169,140,255,.18));
+  border:1px solid var(--line-strong);
+  box-shadow:var(--cyan-glow);
+}
+.logo-name{
+  font-family:"Syne",sans-serif;
+  font-size:1.35rem;
+  font-weight:800;
+  letter-spacing:0;
+}
+.logo-name span{color:var(--teal)}
+.status-wrap{
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:10px;
+  flex-wrap:wrap;
+}
+.chip{
+  display:flex;
+  align-items:center;
+  gap:7px;
+  height:28px;
+  border:1px solid rgba(255,255,255,.13);
+  border-radius:999px;
+  padding:0 11px;
+  background:rgba(255,255,255,.055);
+  color:rgba(246,251,255,.82);
+  font-size:.76rem;
+  font-weight:700;
+}
+.dot{
+  width:7px;
+  height:7px;
+  border-radius:50%;
+  background:#ef4444;
+  box-shadow:0 0 0 3px rgba(239,68,68,.12);
+}
+.dot.ok{background:var(--teal);box-shadow:0 0 0 3px rgba(0,180,166,.17)}
+.dot.pulse{animation:pulse 2s infinite}
+#user-display{
+  color:rgba(246,251,255,.62);
+  font-size:.86rem;
+  font-weight:700;
+}
+
+main{
+  max-width:1440px;
+  margin:0 auto;
+  padding:30px 32px 44px;
+}
+.section-title{
+  display:flex;
+  align-items:center;
+  gap:14px;
+  margin:0 0 16px;
+  font-family:"Syne",sans-serif;
+  font-size:1.15rem;
+  font-weight:800;
+  color:var(--ink);
+  text-shadow:0 0 18px rgba(40,248,220,.16);
+}
+.section-title::after{
+  content:"";
+  flex:1;
+  height:2px;
+  background:linear-gradient(90deg,var(--line-strong),transparent);
+}
+.layout{
+  display:grid;
+  grid-template-columns:minmax(330px,410px) 1fr;
+  gap:24px;
+  align-items:start;
+}
+.stack{display:flex;flex-direction:column;gap:20px}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.card{
+  background:var(--card);
+  border:1px solid var(--line);
+  border-radius:var(--radius);
+  box-shadow:var(--shadow);
+  overflow:hidden;
+  position:relative;
+  backdrop-filter:blur(20px);
+}
+.card-head{
+  min-height:66px;
+  padding:15px 18px;
+  border-bottom:1px solid var(--line);
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  background:linear-gradient(90deg,rgba(255,255,255,.065),rgba(255,255,255,.02));
+}
+.card-title{
+  display:flex;
+  align-items:center;
+  gap:12px;
+  min-width:0;
+}
+.card-icon{
+  width:36px;
+  height:36px;
+  flex:0 0 36px;
+  display:grid;
+  place-items:center;
+  border-radius:var(--radius);
+  font-size:1.05rem;
+  border:1px solid rgba(255,255,255,.12);
+}
+.ci-teal{background:rgba(40,248,220,.16);color:var(--teal)}
+.ci-coral{background:rgba(255,95,130,.16);color:var(--coral)}
+.ci-amber{background:rgba(255,200,87,.16);color:var(--amber)}
+.ci-violet{background:rgba(169,140,255,.16);color:var(--violet)}
+.ci-green{background:rgba(55,242,154,.16);color:var(--green)}
+.card-head h2{
+  font-family:"Syne",sans-serif;
+  font-size:.96rem;
+  line-height:1.2;
+  font-weight:800;
+  letter-spacing:0;
+}
+.card-body{padding:18px}
+.mini-meta{
+  color:var(--muted);
+  font-size:.78rem;
+  font-weight:700;
+  white-space:nowrap;
+}
+
+.btn{
+  min-height:42px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  padding:0 16px;
+  border-radius:var(--radius);
+  font-family:"Syne",sans-serif;
+  font-weight:800;
+  cursor:pointer;
+  transition:transform .18s ease,filter .18s ease,border-color .18s ease,color .18s ease;
+}
+.btn:hover{transform:translateY(-1px)}
+.btn-primary{
+  background:linear-gradient(135deg,var(--teal),var(--blue));
+  color:#031018;
+  box-shadow:var(--cyan-glow);
+}
+.btn-primary:hover{filter:brightness(1.14)}
+.btn-teal{
+  background:rgba(40,248,220,.14);
+  border:1px solid rgba(40,248,220,.42);
+  color:var(--teal);
+}
+.btn-teal:hover{filter:brightness(1.08)}
+.btn-ghost{
+  background:transparent;
+  color:var(--muted);
+  border:1px solid var(--line);
+}
+.btn-ghost:hover{border-color:var(--teal);color:var(--teal)}
+.btn-full{width:100%}
+.btn-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+
+.signal-hero{
+  min-height:220px;
+  margin-bottom:24px;
+  position:relative;
+  overflow:hidden;
+  border:1px solid var(--line-strong);
+  border-radius:var(--radius);
+  background:
+    linear-gradient(90deg,rgba(40,248,220,.08) 1px,transparent 1px),
+    linear-gradient(180deg,rgba(255,255,255,.055) 1px,transparent 1px),
+    linear-gradient(135deg,rgba(40,248,220,.11),rgba(169,140,255,.08) 42%,rgba(255,95,130,.075));
+  background-size:40px 40px,40px 40px,auto;
+  box-shadow:var(--shadow),var(--cyan-glow);
+  animation:gridShift 18s linear infinite;
+}
+.signal-hero canvas{
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+}
+.signal-copy{
+  position:relative;
+  z-index:2;
+  min-height:220px;
+  display:flex;
+  flex-direction:column;
+  justify-content:space-between;
+  padding:22px;
+  pointer-events:none;
+}
+.signal-kicker{
+  color:var(--teal);
+  font-size:.74rem;
+  font-weight:800;
+  letter-spacing:.14em;
+  text-transform:uppercase;
+}
+.signal-title{
+  max-width:680px;
+  margin-top:8px;
+  font-family:"Syne",sans-serif;
+  font-size:clamp(2rem,5vw,4.7rem);
+  line-height:.92;
+  font-weight:800;
+  text-shadow:0 0 34px rgba(40,248,220,.24);
+}
+.signal-strip{
+  display:flex;
+  gap:10px;
+  flex-wrap:wrap;
+  margin-top:18px;
+}
+.signal-pill{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  min-height:32px;
+  padding:0 12px;
+  border:1px solid rgba(255,255,255,.14);
+  border-radius:999px;
+  background:rgba(5,7,13,.58);
+  color:rgba(246,251,255,.84);
+  font-size:.78rem;
+  font-weight:800;
+  backdrop-filter:blur(12px);
+}
+.signal-pill span{
+  color:var(--teal);
+  font-family:"Syne",sans-serif;
+}
+.shortcut-pill{
+  pointer-events:auto;
+  cursor:pointer;
+}
+.shortcut-pill.active{
+  border-color:rgba(40,248,220,.58);
+  box-shadow:0 0 22px rgba(40,248,220,.18);
+}
+.shortcut-pill kbd{
+  min-width:22px;
+  height:22px;
+  display:inline-grid;
+  place-items:center;
+  border-radius:6px;
+  background:rgba(255,255,255,.1);
+  border:1px solid rgba(255,255,255,.16);
+  color:var(--ink);
+  font-family:"Syne",sans-serif;
+  font-size:.7rem;
+}
+.shortcut-pill.active kbd{
+  background:var(--teal);
+  color:#031018;
+}
+.emotion-shortcut.active{
+  border-color:rgba(169,140,255,.58);
+  box-shadow:0 0 22px rgba(169,140,255,.18);
+}
+.emotion-shortcut.active kbd{
+  background:var(--violet);
+  color:#fff;
+}
+.signal-status{
+  align-self:flex-end;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  color:var(--green);
+  font-size:.78rem;
+  font-weight:800;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+}
+.signal-status::before{
+  content:"";
+  width:8px;
+  height:8px;
+  border-radius:50%;
+  background:var(--green);
+  box-shadow:0 0 18px rgba(55,242,154,.8);
+  animation:pulse 1.4s infinite;
+}
+
+.camera-box{
+  position:relative;
+  aspect-ratio:4/3;
+  background:#01050a;
+  border:1px solid var(--line);
+  border-radius:var(--radius);
+  overflow:hidden;
+}
+#video,#snap-preview{
+  width:100%;
+  height:100%;
+  object-fit:cover;
+  display:block;
+}
+#canvas{display:none}
+.camera-empty{
+  position:absolute;
+  inset:0;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  flex-direction:column;
+  gap:10px;
+  color:var(--ink);
+  text-align:center;
+  padding:18px;
+  background:
+    linear-gradient(90deg,rgba(40,248,220,.08) 1px,transparent 1px),
+    linear-gradient(180deg,rgba(255,255,255,.05) 1px,transparent 1px);
+  background-size:28px 28px;
+}
+.camera-empty strong{
+  font-family:"Syne",sans-serif;
+  font-size:1rem;
+}
+.emotion-pill{
+  position:absolute;
+  left:12px;
+  bottom:12px;
+  z-index:2;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  min-height:32px;
+  padding:0 12px;
+  border-radius:999px;
+  border:1px solid rgba(255,255,255,.18);
+  background:rgba(2,5,10,.78);
+  color:#fff;
+  font-size:.82rem;
+  font-weight:800;
+  backdrop-filter:blur(10px);
+}
+.emotion-pill span{color:var(--teal)}
+
+.sensor-grid{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:10px;
+}
+.eeg-grid{
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:8px;
+  margin-top:12px;
+}
+.tile{
+  min-height:76px;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:4px;
+  background:var(--soft);
+  border:1px solid var(--line);
+  border-radius:var(--radius);
+  text-align:center;
+  padding:10px 8px;
+  position:relative;
+  overflow:hidden;
+}
+.tile::before{
+  content:"";
+  position:absolute;
+  left:0;
+  right:0;
+  top:0;
+  height:2px;
+  background:linear-gradient(90deg,transparent,var(--teal),transparent);
+  background-size:200% 100%;
+  animation:borderFlow 3s linear infinite;
+}
+.graph-tile{
+  min-height:134px;
+  align-items:stretch;
+  justify-content:flex-start;
+  gap:10px;
+  cursor:crosshair;
+  transition:border-color .18s ease,box-shadow .18s ease,transform .18s ease;
+}
+.graph-tile:hover{
+  border-color:var(--line-strong);
+  box-shadow:0 0 26px rgba(40,248,220,.12);
+  transform:translateY(-1px);
+}
+.graph-head{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:10px;
+  position:relative;
+  z-index:1;
+}
+.graph-unit{
+  color:var(--muted);
+  font-size:.62rem;
+  font-weight:800;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+}
+.sensor-spark{
+  width:100%;
+  height:58px;
+  display:block;
+  margin-top:auto;
+  border:1px solid rgba(131,239,255,.14);
+  border-radius:6px;
+  background:
+    linear-gradient(90deg,rgba(131,239,255,.08) 1px,transparent 1px),
+    linear-gradient(180deg,rgba(255,255,255,.05) 1px,transparent 1px),
+    rgba(1,5,10,.42);
+  background-size:18px 18px;
+}
+.tile-value{
+  max-width:100%;
+  font-family:"Syne",sans-serif;
+  font-size:1.38rem;
+  line-height:1;
+  font-weight:800;
+  color:var(--ink);
+  overflow-wrap:anywhere;
+  text-shadow:0 0 20px rgba(40,248,220,.18);
+}
+.tile-value.teal{color:var(--teal)}
+.tile-value.coral{color:var(--coral)}
+.tile-value.blue{color:var(--blue)}
+.tile-label{
+  color:var(--muted);
+  font-size:.68rem;
+  font-weight:800;
+  text-transform:uppercase;
+  letter-spacing:.05em;
+}
+.eeg-grid .tile{min-height:68px}
+.eeg-grid .tile-value{font-size:1rem}
+.eeg-grid .graph-tile{min-height:118px}
+.eeg-grid .sensor-spark{height:42px}
+
+.result-hero{
+  min-height:132px;
+  display:flex;
+  align-items:center;
+  gap:20px;
+  padding:22px;
+  background:
+    linear-gradient(90deg,rgba(40,248,220,.12) 1px,transparent 1px),
+    linear-gradient(180deg,rgba(255,255,255,.05) 1px,transparent 1px),
+    #050b12;
+  background-size:30px 30px;
+  border:1px solid rgba(40,248,220,.2);
+  border-radius:var(--radius);
+  color:var(--ink);
+  box-shadow:inset 0 0 44px rgba(40,248,220,.08);
+}
+.hero-main{min-width:0}
+.hero-label{
+  font-family:"Syne",sans-serif;
+  font-size:clamp(1.45rem,3.4vw,2.35rem);
+  font-weight:800;
+  line-height:1.04;
+  overflow-wrap:anywhere;
+}
+.hero-sub{
+  color:rgba(246,251,255,.58);
+  font-size:.84rem;
+  margin-top:6px;
+}
+.hero-conf{
+  margin-left:auto;
+  text-align:right;
+  color:var(--teal);
+  font-family:"Syne",sans-serif;
+  font-size:2.15rem;
+  font-weight:800;
+  line-height:1;
+}
+.hero-conf small{
+  display:block;
+  color:rgba(246,251,255,.58);
+  font-family:"DM Sans",sans-serif;
+  font-size:.7rem;
+  font-weight:700;
+  margin-top:5px;
+}
+.meter{
+  height:8px;
+  margin-top:16px;
+  background:rgba(255,255,255,.08);
+  border-radius:999px;
+  overflow:hidden;
+  border:1px solid rgba(255,255,255,.08);
+}
+.meter-fill{
+  height:100%;
+  width:0%;
+  border-radius:999px;
+  background:var(--teal);
+  transition:width .65s cubic-bezier(.22,1,.36,1),background .2s;
+  box-shadow:0 0 18px currentColor;
+}
+.prob-row{
+  display:flex;
+  align-items:center;
+  gap:12px;
+  margin-bottom:10px;
+  font-size:.84rem;
+}
+.prob-name{width:130px;flex-shrink:0;font-weight:700}
+.prob-track{flex:1;height:8px;background:rgba(255,255,255,.08);border-radius:999px;overflow:hidden}
+.prob-fill{height:100%;border-radius:999px;transition:width .65s cubic-bezier(.22,1,.36,1)}
+.prob-pct{width:44px;text-align:right;color:var(--muted);font-weight:800}
+.fill-teal{background:var(--teal)}
+.fill-coral{background:var(--coral)}
+.fill-amber{background:var(--amber)}
+.fill-violet{background:var(--violet)}
+
+.timeline{
+  display:flex;
+  overflow-x:auto;
+  border:1px solid var(--line);
+  border-radius:var(--radius);
+}
+.tl-step{
+  min-width:150px;
+  flex:1;
+  padding:16px 12px;
+  text-align:center;
+  border-right:1px solid var(--line);
+  background:var(--soft);
+}
+.tl-step:last-child{border-right:0}
+.tl-dot{
+  width:12px;
+  height:12px;
+  border-radius:50%;
+  margin:0 auto 9px;
+}
+.dot-low{background:var(--blue)}
+.dot-normal{background:var(--green)}
+.dot-stress{background:var(--coral)}
+.tl-state{
+  min-height:34px;
+  font-family:"Syne",sans-serif;
+  font-size:.78rem;
+  line-height:1.15;
+  font-weight:800;
+}
+.tl-vals{
+  color:var(--muted);
+  font-size:.72rem;
+  line-height:1.55;
+  margin-top:7px;
+}
+.empty-state{
+  color:var(--muted);
+  font-size:.9rem;
+  background:var(--soft);
+  border:1px solid var(--line);
+  border-radius:var(--radius);
+  padding:14px;
+}
+.rec-section{margin-bottom:18px}
+.rec-section:last-child{margin-bottom:0}
+.rec-label{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  margin-bottom:9px;
+  font-family:"Syne",sans-serif;
+  font-size:.76rem;
+  font-weight:800;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+}
+.rec-tag{
+  display:inline-flex;
+  align-items:center;
+  min-height:20px;
+  border-radius:999px;
+  padding:0 8px;
+  font-family:"DM Sans",sans-serif;
+  font-size:.68rem;
+  letter-spacing:0;
+  text-transform:none;
+}
+.tag-red{background:#fee2e2;color:#991b1b}
+.tag-green{background:#d1fae5;color:#065f46}
+.tag-blue{background:#dbeafe;color:#1e40af}
+.rec-list{list-style:none;display:flex;flex-direction:column;gap:8px}
+.rec-list li{
+  background:var(--soft);
+  border-left:3px solid var(--line);
+  border-radius:var(--radius);
+  padding:10px 12px;
+  font-size:.9rem;
+  line-height:1.45;
+}
+.rec-first-aid li{border-left-color:var(--coral)}
+.rec-lifestyle li{border-left-color:var(--teal)}
+.rec-professional li{border-left-color:var(--violet)}
+.trend-badge{
+  width:100%;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  border-radius:var(--radius);
+  padding:11px 13px;
+  font-size:.9rem;
+  line-height:1.35;
+  font-weight:700;
+  margin-bottom:14px;
+}
+.trend-worsen{background:rgba(255,95,130,.12);color:#ff9aad;border:1px solid rgba(255,95,130,.35)}
+.trend-improve{background:rgba(55,242,154,.12);color:#9effcb;border:1px solid rgba(55,242,154,.35)}
+.trend-stable{background:rgba(98,168,255,.12);color:#b9d5ff;border:1px solid rgba(98,168,255,.35)}
+.emotion-tip{
+  background:rgba(169,140,255,.12);
+  border-left:3px solid var(--violet);
+  border-radius:var(--radius);
+  padding:10px 12px;
+  font-size:.9rem;
+  line-height:1.4;
+  margin-bottom:14px;
+}
+
+@media(max-width:1100px){
+  .layout{grid-template-columns:1fr}
+  .grid-2{grid-template-columns:1fr}
+}
+@media(max-width:760px){
+  .topbar{align-items:flex-start;flex-direction:column;padding:14px 18px}
+  main{padding:20px 16px 34px}
+  .status-wrap{justify-content:flex-start}
+  .sensor-grid{grid-template-columns:1fr 1fr}
+  .eeg-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .result-hero{align-items:flex-start;flex-direction:column}
+  .hero-conf{margin-left:0;text-align:left}
+  .signal-copy{min-height:260px}
+  .signal-status{align-self:flex-start}
+}
+</style>
+</head>
+<body>
+<div id="overlay">
+  <div class="modal fade-in">
+    <div class="modal-mark">🧠</div>
+    <h1>Mind<span>Sense</span> AI</h1>
+    <p>Live physiological and facial assessment dashboard.</p>
+    <form id="reg-form">
+      <div class="input-group">
+        <label for="reg-name">Full Name</label>
+        <input type="text" id="reg-name" required placeholder="Jane Doe">
+      </div>
+      <div class="input-group">
+        <label for="reg-phone">Phone Number</label>
+        <input type="text" id="reg-phone" placeholder="+1 234 567 8900">
+      </div>
+      <div class="input-group">
+        <label for="reg-email">Email Address</label>
+        <input type="email" id="reg-email" placeholder="jane@example.com">
+      </div>
+      <button type="submit" class="btn btn-primary btn-full" id="reg-btn">Start Session</button>
+    </form>
+  </div>
+</div>
+
+<header>
+  <div class="topbar">
+    <div class="logo">
+      <div class="logo-mark">🧠</div>
+      <div>
+        <div class="logo-name">Mind<span>Sense</span> AI</div>
+        <div id="user-display"></div>
+      </div>
+    </div>
+    <div class="status-wrap" id="status-chips">
+      <div class="chip"><div class="dot pulse" id="d-rnn"></div>RNN Sensor</div>
+      <div class="chip"><div class="dot pulse" id="d-facial"></div>Facial Model</div>
+      <div class="chip"><div class="dot pulse" id="d-pred"></div>Predictor</div>
+      <div class="chip"><div class="dot pulse" id="d-arduino"></div>Arduino</div>
+      <div class="chip"><div class="dot pulse" id="d-eeg"></div>EEG</div>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section class="signal-hero">
+    <canvas id="biosignal-canvas"></canvas>
+    <div class="signal-copy">
+      <div>
+        <div class="signal-kicker">Neural Telemetry</div>
+        <div class="signal-title">BioSignal Matrix</div>
+        <div class="signal-strip">
+          <div class="signal-pill">GSR <span id="signal-gsr">0</span></div>
+          <div class="signal-pill">PPG <span id="signal-ppg">0</span></div>
+          <div class="signal-pill">EEG <span id="signal-eeg">0.00</span></div>
+          <div class="signal-pill">STATE <span id="signal-state">Analyzing</span></div>
+          <button class="signal-pill shortcut-pill" type="button" data-shortcut="1"><kbd>1</kbd> Normal</button>
+          <button class="signal-pill shortcut-pill" type="button" data-shortcut="2"><kbd>2</kbd> Low Anxiety</button>
+          <button class="signal-pill shortcut-pill" type="button" data-shortcut="3"><kbd>3</kbd> Low-Moderate Stress</button>
+          <button class="signal-pill shortcut-pill" type="button" data-shortcut="0"><kbd>0</kbd> No Signal</button>
+          <button class="signal-pill shortcut-pill emotion-shortcut" type="button" data-emotion-key="h"><kbd>H</kbd> Happy</button>
+          <button class="signal-pill shortcut-pill emotion-shortcut active" type="button" data-emotion-key="n"><kbd>N</kbd> Neutral</button>
+          <button class="signal-pill shortcut-pill emotion-shortcut" type="button" data-emotion-key="s"><kbd>S</kbd> Sad</button>
+          <button class="signal-pill shortcut-pill emotion-shortcut" type="button" data-emotion-key="a"><kbd>A</kbd> Angry</button>
+          <button class="signal-pill shortcut-pill emotion-shortcut" type="button" data-emotion-key="d"><kbd>D</kbd> Disgust</button>
+          <button class="signal-pill shortcut-pill emotion-shortcut" type="button" data-emotion-key="x"><kbd>X</kbd> Surprise</button>
+        </div>
+      </div>
+      <div class="signal-status" id="signal-status">Live Stream</div>
+    </div>
+  </section>
+
+  <div class="layout">
+    <div class="stack">
+      <section class="card">
+        <div class="card-head">
+          <div class="card-title">
+            <div class="card-icon ci-teal">📸</div>
+            <h2>Facial Emotion Feed</h2>
+          </div>
+          <div class="mini-meta" id="camera-state">Idle</div>
+        </div>
+        <div class="card-body">
+          <div class="camera-box">
+            <div class="camera-empty" id="camera-empty">
+              <strong>Camera Feed</strong>
+              <span id="camera-note">Waiting for session</span>
+            </div>
+            <video id="video" autoplay playsinline muted class="hidden"></video>
+            <canvas id="canvas"></canvas>
+            <div class="emotion-pill">Emotion <span id="emotion-lbl">Neutral (0.0%)</span></div>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-teal" type="button" id="btn-start-camera">Start Camera</button>
+            <button class="btn btn-ghost" type="button" id="btn-stop-camera">Stop</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <div class="card-title">
+            <div class="card-icon ci-coral">📡</div>
+            <h2>Live Biometrics</h2>
+          </div>
+          <div class="mini-meta" id="updated-at">--</div>
+        </div>
+        <div class="card-body">
+          <div class="sensor-grid">
+            <div class="tile graph-tile" data-graph="gsr" title="Live GSR signal trace">
+              <div class="graph-head">
+                <div>
+                  <div class="tile-value coral" id="val-gsr">0</div>
+                  <div class="tile-label">GSR Raw</div>
+                </div>
+                <div class="graph-unit">raw</div>
+              </div>
+              <canvas class="sensor-spark" id="spark-gsr" data-sensor="gsr"></canvas>
+            </div>
+            <div class="tile graph-tile" data-graph="ppg" title="Live heart-rate signal trace">
+              <div class="graph-head">
+                <div>
+                  <div class="tile-value coral" id="val-ppg">0</div>
+                  <div class="tile-label">Heart Rate</div>
+                </div>
+                <div class="graph-unit">bpm</div>
+              </div>
+              <canvas class="sensor-spark" id="spark-ppg" data-sensor="ppg"></canvas>
+            </div>
+          </div>
+          <div class="eeg-grid">
+            <div class="tile graph-tile" title="Live Delta EEG trace">
+              <div class="graph-head"><div><div class="tile-value blue" id="val-delta">0.00</div><div class="tile-label">Delta</div></div><div class="graph-unit">eeg</div></div>
+              <canvas class="sensor-spark" id="spark-delta" data-sensor="delta"></canvas>
+            </div>
+            <div class="tile graph-tile" title="Live Theta EEG trace">
+              <div class="graph-head"><div><div class="tile-value blue" id="val-theta">0.00</div><div class="tile-label">Theta</div></div><div class="graph-unit">eeg</div></div>
+              <canvas class="sensor-spark" id="spark-theta" data-sensor="theta"></canvas>
+            </div>
+            <div class="tile graph-tile" title="Live Low Alpha EEG trace">
+              <div class="graph-head"><div><div class="tile-value blue" id="val-la">0.00</div><div class="tile-label">Low Alpha</div></div><div class="graph-unit">eeg</div></div>
+              <canvas class="sensor-spark" id="spark-low-alpha" data-sensor="low_alpha"></canvas>
+            </div>
+            <div class="tile graph-tile" title="Live High Alpha EEG trace">
+              <div class="graph-head"><div><div class="tile-value blue" id="val-ha">0.00</div><div class="tile-label">High Alpha</div></div><div class="graph-unit">eeg</div></div>
+              <canvas class="sensor-spark" id="spark-high-alpha" data-sensor="high_alpha"></canvas>
+            </div>
+            <div class="tile graph-tile" title="Live Low Beta EEG trace">
+              <div class="graph-head"><div><div class="tile-value blue" id="val-lb">0.00</div><div class="tile-label">Low Beta</div></div><div class="graph-unit">eeg</div></div>
+              <canvas class="sensor-spark" id="spark-low-beta" data-sensor="low_beta"></canvas>
+            </div>
+            <div class="tile graph-tile" title="Live High Beta EEG trace">
+              <div class="graph-head"><div><div class="tile-value blue" id="val-hb">0.00</div><div class="tile-label">High Beta</div></div><div class="graph-unit">eeg</div></div>
+              <canvas class="sensor-spark" id="spark-high-beta" data-sensor="high_beta"></canvas>
+            </div>
+            <div class="tile graph-tile" title="Live Low Gamma EEG trace">
+              <div class="graph-head"><div><div class="tile-value blue" id="val-lg">0.00</div><div class="tile-label">Low Gamma</div></div><div class="graph-unit">eeg</div></div>
+              <canvas class="sensor-spark" id="spark-low-gamma" data-sensor="low_gamma"></canvas>
+            </div>
+            <div class="tile graph-tile" title="Live Mid Gamma EEG trace">
+              <div class="graph-head"><div><div class="tile-value blue" id="val-mg">0.00</div><div class="tile-label">Mid Gamma</div></div><div class="graph-unit">eeg</div></div>
+              <canvas class="sensor-spark" id="spark-mid-gamma" data-sensor="mid_gamma"></canvas>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="stack">
+      <section>
+        <div class="section-title">Current Assessment</div>
+        <div class="grid-2">
+          <div class="card fade-in">
+            <div class="card-head">
+              <div class="card-title">
+                <div class="card-icon ci-violet">🧠</div>
+                <h2>Mental State</h2>
+              </div>
+              <div class="mini-meta">Sensor RNN</div>
+            </div>
+            <div class="card-body">
+              <div class="result-hero">
+                <div class="hero-main">
+                  <div class="hero-label" id="state-label">Analyzing</div>
+                  <div class="hero-sub">Live sensor classification</div>
+                </div>
+                <div class="hero-conf"><span id="state-conf">0.0</span>%<small>confidence</small></div>
+              </div>
+              <div class="meter"><div class="meter-fill" id="state-meter"></div></div>
+              <div id="state-probs" style="margin-top:16px"></div>
+            </div>
+          </div>
+
+          <div class="card fade-in">
+            <div class="card-head">
+              <div class="card-title">
+                <div class="card-icon ci-teal">😊</div>
+                <h2>Facial Signal</h2>
+              </div>
+              <div class="mini-meta">Camera</div>
+            </div>
+            <div class="card-body">
+              <div class="result-hero">
+                <div class="hero-main">
+                  <div class="hero-label" id="emotion-label">Neutral</div>
+                  <div class="hero-sub">Live facial expression estimate</div>
+                </div>
+                <div class="hero-conf"><span id="emotion-conf">0.0</span>%<small>confidence</small></div>
+              </div>
+              <div class="meter"><div class="meter-fill" id="emotion-meter"></div></div>
+              <div id="emotion-probs" style="margin-top:16px"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <div class="card-title">
+            <div class="card-icon ci-amber">🔮</div>
+            <h2>5-Step Physiological Forecast</h2>
+          </div>
+          <div class="mini-meta">Seq2Seq LSTM</div>
+        </div>
+        <div class="card-body">
+          <div class="timeline" id="timeline-container">
+            <div class="empty-state">Forecast will appear after live readings are available.</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <div class="card-title">
+            <div class="card-icon ci-green">💡</div>
+            <h2>AI Health Guidance</h2>
+          </div>
+          <div class="mini-meta" id="trend-label">Stable</div>
+        </div>
+        <div class="card-body" id="rec-body">
+          <div class="empty-state">Personalized guidance will update with the live assessment.</div>
+        </div>
+      </section>
+    </div>
+  </div>
+</main>
+
+<script>
+let userId = "";
+let stream = null;
+let sessionStarted = false;
+let liveTimer = null;
+let faceTimer = null;
+let statusTimer = null;
+let latestEmotion = "Neutral";
+let latestEmotionConfidence = 0;
+let latestSensors = {};
+let biosignalTick = 0;
+let activeShortcut = null;
+let shortcutTimer = null;
+let activeEmotionKey = "n";
+let manualEmotionLocked = false;
+
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const biosignalCanvas = document.getElementById("biosignal-canvas");
+const biosignalCtx = biosignalCanvas?.getContext("2d");
+const SENSOR_SERIES = [
+  { key: "gsr", canvasId: "spark-gsr", color: "40,248,220", range: [0, 42000] },
+  { key: "ppg", canvasId: "spark-ppg", color: "255,95,130", range: [40, 200] },
+  { key: "delta", canvasId: "spark-delta", color: "98,168,255", range: [0, 1] },
+  { key: "theta", canvasId: "spark-theta", color: "98,168,255", range: [0, 1] },
+  { key: "low_alpha", canvasId: "spark-low-alpha", color: "169,140,255", range: [0, 1] },
+  { key: "high_alpha", canvasId: "spark-high-alpha", color: "169,140,255", range: [0, 1] },
+  { key: "low_beta", canvasId: "spark-low-beta", color: "255,200,87", range: [0, 1] },
+  { key: "high_beta", canvasId: "spark-high-beta", color: "255,200,87", range: [0, 1] },
+  { key: "low_gamma", canvasId: "spark-low-gamma", color: "55,242,154", range: [0, 1] },
+  { key: "mid_gamma", canvasId: "spark-mid-gamma", color: "55,242,154", range: [0, 1] },
+];
+const FACE_EMOTIONS = ["Angry", "Disgust", "Fear", "Happy", "Neutral", "Sad", "Surprise"];
+const FACE_SHORTCUTS = {
+  h: { emotion: "Happy", confidence: .96 },
+  n: { emotion: "Neutral", confidence: .96 },
+  s: { emotion: "Sad", confidence: .96 },
+  a: { emotion: "Angry", confidence: .96 },
+  d: { emotion: "Disgust", confidence: .96 },
+  x: { emotion: "Surprise", confidence: .96 },
+};
+const DEMO_PROFILES = {
+  "0": {
+    name: "No Signal",
+    status: "No Signal",
+    sensors: sensorValues(0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+    jitter: {},
+    state: {
+      state: "NO_SIGNAL",
+      confidence: 0,
+      probabilities: {},
+    },
+    future: [],
+    recommendations: {
+      trend: "stable",
+      trend_message: "No biosignal input is currently detected.",
+      first_aid: ["No sensor stream is active."],
+      emotion_tip: "",
+      lifestyle: ["Press 1, 2, or 3 to load a demo profile, or Esc to return to live readings."],
+      professional: ["Reconnect the sensor hardware when ready."],
+    },
+  },
+  "1": {
+    name: "Normal",
+    status: "Normal Demo",
+    sensors: sensorValues(4300, 72, .28, .24, .48, .42, .22, .19, .11, .09),
+    jitter: { gsr: 180, ppg: 2, eeg: .025 },
+    state: {
+      state: "NORMAL",
+      confidence: .92,
+      probabilities: {
+        NORMAL: .92,
+        LOW_STRESS: .05,
+        MODERATE_STRESS: .02,
+        HIGH_ANXIETY: .005,
+        PANIC_STATE: .003,
+        DEPRESSION: .002,
+      },
+    },
+    future: futureSteps(["NORMAL", "NORMAL", "NORMAL", "NORMAL", "NORMAL"], [4300, 72, .42, .19]),
+    recommendations: {
+      trend: "stable",
+      trend_message: "Normal demo profile is stable and balanced.",
+      first_aid: ["Current state is balanced. Maintain your routine."],
+      emotion_tip: "Calm baseline detected.",
+      lifestyle: ["Continue hydration, movement, and regular sleep timing."],
+      professional: ["Routine wellness check-ins are enough for this profile."],
+    },
+  },
+  "2": {
+    name: "Low Anxiety",
+    status: "Low Anxiety Demo",
+    sensors: sensorValues(7800, 86, .24, .34, .35, .30, .36, .42, .19, .16),
+    jitter: { gsr: 320, ppg: 3, eeg: .035 },
+    state: {
+      state: "LOW_ANXIETY",
+      confidence: .84,
+      probabilities: {
+        LOW_ANXIETY: .84,
+        NORMAL: .08,
+        MODERATE_STRESS: .05,
+        HIGH_ANXIETY: .02,
+        PANIC_STATE: .005,
+        DEPRESSION: .005,
+      },
+    },
+    future: futureSteps(["LOW_ANXIETY", "LOW_ANXIETY", "LOW_ANXIETY", "NORMAL", "NORMAL"], [7800, 86, .30, .42]),
+    recommendations: {
+      trend: "improving",
+      trend_message: "Low anxiety demo profile shows mild arousal with an improving path.",
+      first_aid: ["Try one minute of slow breathing and relax the shoulders."],
+      emotion_tip: "Mild tension profile selected.",
+      lifestyle: ["Reduce stimulation and take a short walk or water break."],
+      professional: ["No urgent escalation is indicated in this demo profile."],
+    },
+  },
+  "3": {
+    name: "Low To Moderate Stress",
+    status: "Stress Demo",
+    sensors: sensorValues(13500, 101, .20, .42, .27, .22, .48, .55, .28, .24),
+    jitter: { gsr: 520, ppg: 4, eeg: .045 },
+    state: {
+      state: "LOW_TO_MODERATE_STRESS",
+      confidence: .81,
+      probabilities: {
+        LOW_TO_MODERATE_STRESS: .81,
+        LOW_ANXIETY: .08,
+        MODERATE_STRESS: .07,
+        NORMAL: .025,
+        HIGH_ANXIETY: .01,
+        PANIC_STATE: .005,
+      },
+    },
+    future: futureSteps(["LOW_TO_MODERATE_STRESS", "MODERATE_STRESS", "MODERATE_STRESS", "LOW_ANXIETY", "LOW_ANXIETY"], [13500, 101, .22, .55]),
+    recommendations: {
+      trend: "stable",
+      trend_message: "Low-to-moderate stress demo profile shows elevated arousal.",
+      first_aid: ["Pause for diaphragmatic breathing and unclench jaw/shoulders."],
+      emotion_tip: "Stress demo profile selected.",
+      lifestyle: ["Take a short break, hydrate, and reduce immediate cognitive load."],
+      professional: ["If this pattern persists in real readings, consider a routine check-in."],
+    },
+  },
+};
+const sensorHistories = {};
+SENSOR_SERIES.forEach((series) => {
+  sensorHistories[series.key] = [];
+});
+
+document.getElementById("btn-start-camera").addEventListener("click", startCamera);
+document.getElementById("btn-stop-camera").addEventListener("click", stopCamera);
+document.addEventListener("keydown", handleShortcutKey);
+document.querySelectorAll("[data-shortcut]").forEach((button) => {
+  button.addEventListener("click", () => activateShortcut(button.dataset.shortcut));
+});
+document.querySelectorAll(".emotion-shortcut").forEach((button) => {
+  button.addEventListener("click", () => applyFaceShortcut(button.dataset.emotionKey));
+});
+window.addEventListener("resize", () => {
+  resizeBiosignalCanvas();
+  drawSensorGraphs();
+});
+resizeBiosignalCanvas();
+applyFaceShortcut(activeEmotionKey, false);
+drawBiosignalFrame();
+
+document.getElementById("reg-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const btn = document.getElementById("reg-btn");
+  const name = document.getElementById("reg-name").value.trim();
+  btn.textContent = "Starting...";
+  btn.disabled = true;
+
+  const fd = new FormData();
+  fd.append("name", name);
+  fd.append("phone", document.getElementById("reg-phone").value);
+  fd.append("email", document.getElementById("reg-email").value);
+
+  try {
+    const res = await fetch("/api/register", { method: "POST", body: fd });
+    const data = await res.json();
+    userId = data.id || "local_user";
+  } catch (err) {
+    userId = "local_user";
+  }
+
+  document.getElementById("user-display").textContent = `Patient: ${name}`;
+  document.getElementById("overlay").classList.add("hidden");
+  startSession();
+});
+
+function startSession() {
+  if (sessionStarted) return;
+  sessionStarted = true;
+  startCamera();
+  fetchStatus();
+  fetchLiveData();
+  liveTimer = setInterval(fetchLiveData, 1000);
+  faceTimer = setInterval(sendFrameForEmotion, 2000);
+  statusTimer = setInterval(fetchStatus, 30000);
+}
+
+async function startCamera() {
+  if (stream) return;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+    video.srcObject = stream;
+    video.classList.remove("hidden");
+    document.getElementById("camera-empty").classList.add("hidden");
+    document.getElementById("camera-state").textContent = "Live";
+  } catch (err) {
+    document.getElementById("camera-state").textContent = "Unavailable";
+    document.getElementById("camera-note").textContent = "Camera unavailable";
+  }
+}
+
+function stopCamera() {
+  if (stream) {
+    stream.getTracks().forEach((track) => track.stop());
+    stream = null;
+  }
+  video.classList.add("hidden");
+  document.getElementById("camera-empty").classList.remove("hidden");
+  document.getElementById("camera-state").textContent = "Stopped";
+}
+
+async function sendFrameForEmotion() {
+  if (manualEmotionLocked) return;
+  if (activeShortcut) return;
+  if (!stream || !video.videoWidth || !video.videoHeight) return;
+
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+
+  canvas.toBlob(async (blob) => {
+    if (!blob) return;
+    const fd = new FormData();
+    fd.append("file", blob, "frame.jpg");
+
+    try {
+      const res = await fetch("/api/predict_facial", { method: "POST", body: fd });
+      const data = await res.json();
+      latestEmotionConfidence = Number(data.confidence || 0);
+      latestEmotion = data.face_detected === false ? "Neutral" : data.emotion || "Neutral";
+      activeEmotionKey = null;
+      const displayedEmotion = data.face_detected === false ? "No face detected" : data.emotion || "Neutral";
+      const faceState = data.face_detected === false
+        ? "No Face"
+        : Number(data.margin || 0) < 0.06
+          ? "Low Certainty"
+          : "Face Lock";
+      document.getElementById("camera-state").textContent = faceState;
+      document.getElementById("signal-status").textContent = faceState;
+      updateEmotionShortcutUI();
+      renderEmotion(displayedEmotion, latestEmotionConfidence, data.probabilities);
+    } catch (err) {}
+  }, "image/jpeg", 0.85);
+}
+
+async function fetchLiveData() {
+  if (activeShortcut) return;
+  try {
+    const params = new URLSearchParams({
+      user_id: userId,
+      emotion: latestEmotion,
+      emotion_confidence: latestEmotionConfidence,
+    });
+    const res = await fetch(`/api/live_data?${params.toString()}`);
+    const data = await res.json();
+    renderSensors(data.sensors || {});
+    renderState(data.state || {});
+    renderTimeline(data.future || []);
+    renderRecommendations(data.recommendation_details, data.recommendations || []);
+    document.getElementById("updated-at").textContent = new Date().toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  } catch (err) {
+    console.error("Failed to fetch live data", err);
+  }
+}
+
+function handleShortcutKey(event) {
+  const target = event.target;
+  const isTyping = target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+  if (isTyping || event.metaKey || event.ctrlKey || event.altKey) return;
+
+  const key = event.key.toLowerCase();
+  if (FACE_SHORTCUTS[key]) {
+    event.preventDefault();
+    applyFaceShortcut(key);
+  } else if (["0", "1", "2", "3"].includes(event.key)) {
+    event.preventDefault();
+    activateShortcut(event.key);
+  } else if (event.key === "Escape" && activeShortcut) {
+    event.preventDefault();
+    deactivateShortcut();
+  }
+}
+
+function activateShortcut(key) {
+  const profile = DEMO_PROFILES[key];
+  if (!profile) return;
+  activeShortcut = key;
+  seedSensorHistories(profile);
+  updateShortcutUI();
+  renderShortcutProfile();
+
+  if (shortcutTimer) clearInterval(shortcutTimer);
+  shortcutTimer = setInterval(renderShortcutProfile, key === "0" ? 1200 : 900);
+}
+
+function deactivateShortcut() {
+  activeShortcut = null;
+  if (shortcutTimer) {
+    clearInterval(shortcutTimer);
+    shortcutTimer = null;
+  }
+  updateShortcutUI();
+  document.getElementById("signal-status").textContent = "Live Stream";
+  document.getElementById("camera-state").textContent = stream ? "Live" : "Idle";
+  fetchLiveData();
+}
+
+function renderShortcutProfile() {
+  if (!activeShortcut) return;
+  const profile = DEMO_PROFILES[activeShortcut];
+  const sensors = activeShortcut === "0"
+    ? profile.sensors
+    : jitterSensors(profile.sensors, profile.jitter);
+
+  renderSensors(sensors);
+  renderState(profile.state);
+  renderTimeline(profile.future);
+  renderRecommendations(profile.recommendations, []);
+  renderSelectedFaceSignal();
+
+  document.getElementById("signal-status").textContent = profile.status;
+  document.getElementById("camera-state").textContent = profile.status;
+  document.getElementById("updated-at").textContent = activeShortcut === "0"
+    ? "No Signal"
+    : `${profile.name} Demo`;
+}
+
+function updateShortcutUI() {
+  document.querySelectorAll("[data-shortcut]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.shortcut === activeShortcut);
+  });
+}
+
+function applyFaceShortcut(key, lock = true) {
+  const normalizedKey = String(key || "").toLowerCase();
+  const face = FACE_SHORTCUTS[normalizedKey];
+  if (!face) return;
+
+  activeEmotionKey = normalizedKey;
+  manualEmotionLocked = lock;
+  latestEmotion = face.emotion;
+  latestEmotionConfidence = face.confidence;
+  updateEmotionShortcutUI();
+  renderEmotion(face.emotion, face.confidence, faceProbabilities(face.emotion));
+}
+
+function renderSelectedFaceSignal() {
+  const selectedKey = activeEmotionKey || "n";
+  const face = FACE_SHORTCUTS[selectedKey] || FACE_SHORTCUTS.n;
+  activeEmotionKey = selectedKey;
+  latestEmotion = face.emotion;
+  latestEmotionConfidence = face.confidence;
+  updateEmotionShortcutUI();
+  renderEmotion(face.emotion, face.confidence, faceProbabilities(face.emotion));
+}
+
+function updateEmotionShortcutUI() {
+  document.querySelectorAll(".emotion-shortcut").forEach((button) => {
+    button.classList.toggle("active", button.dataset.emotionKey === activeEmotionKey);
+  });
+}
+
+function faceProbabilities(selectedEmotion) {
+  const probabilities = {};
+  FACE_EMOTIONS.forEach((emotion) => {
+    probabilities[emotion] = emotion === selectedEmotion ? .96 : .006;
+  });
+  return probabilities;
+}
+
+function seedSensorHistories(profile) {
+  SENSOR_SERIES.forEach((series) => {
+    const base = num(profile.sensors[series.key]);
+    const history = sensorHistories[series.key];
+    history.length = 0;
+    const length = activeShortcut === "0" ? 32 : 44;
+    for (let i = 0; i < length; i += 1) {
+      const phase = i / length * Math.PI * 2;
+      const wave = activeShortcut === "0" ? 0 : Math.sin(phase * 2.4) * profileJitterForKey(series.key, profile.jitter) * .35;
+      history.push(Math.max(series.range[0], Math.min(series.range[1], base + wave)));
+    }
+  });
+}
+
+function jitterSensors(base, jitter = {}) {
+  const out = {};
+  Object.entries(base).forEach(([key, value]) => {
+    const amount = profileJitterForKey(key, jitter);
+    const noise = (Math.random() - .5) * amount * 2;
+    out[key] = Math.max(0, value + noise);
+  });
+  return out;
+}
+
+function profileJitterForKey(key, jitter = {}) {
+  if (key === "gsr") return jitter.gsr || 0;
+  if (key === "ppg") return jitter.ppg || 0;
+  return jitter.eeg || 0;
+}
+
+async function fetchStatus() {
+  try {
+    const res = await fetch("/api/status");
+    const data = await res.json();
+    setDot("d-rnn", data.models?.rnn_sensor);
+    setDot("d-facial", data.models?.vit_facial || data.models?.facial);
+    setDot("d-pred", data.models?.future_predictor || data.models?.predictor);
+    setDot("d-arduino", data.sensors?.arduino);
+    setDot("d-eeg", data.sensors?.eeg);
+  } catch (err) {}
+}
+
+function renderSensors(sensors) {
+  latestSensors = sensors || {};
+  setText("val-gsr", Math.round(num(sensors.gsr)));
+  setText("val-ppg", `${Math.round(num(sensors.ppg))}`);
+  setText("val-delta", num(sensors.delta).toFixed(2));
+  setText("val-theta", num(sensors.theta).toFixed(2));
+  setText("val-la", num(sensors.low_alpha).toFixed(2));
+  setText("val-ha", num(sensors.high_alpha).toFixed(2));
+  setText("val-lb", num(sensors.low_beta).toFixed(2));
+  setText("val-hb", num(sensors.high_beta).toFixed(2));
+  setText("val-lg", num(sensors.low_gamma).toFixed(2));
+  setText("val-mg", num(sensors.mid_gamma).toFixed(2));
+  const eegAvg = (
+    num(sensors.delta) +
+    num(sensors.theta) +
+    num(sensors.low_alpha) +
+    num(sensors.high_alpha) +
+    num(sensors.low_beta) +
+    num(sensors.high_beta) +
+    num(sensors.low_gamma) +
+    num(sensors.mid_gamma)
+  ) / 8;
+  setText("signal-gsr", Math.round(num(sensors.gsr)));
+  setText("signal-ppg", Math.round(num(sensors.ppg)));
+  setText("signal-eeg", eegAvg.toFixed(2));
+  updateSensorHistories(sensors);
+}
+
+function renderState(state) {
+  const label = formatState(state.state || "Unknown");
+  const confidence = Number(state.confidence || 0);
+  setText("state-label", label);
+  setText("signal-state", label);
+  setText("state-conf", pct(confidence));
+  setMeter("state-meter", confidence, stateColor(label));
+  probBars("state-probs", state.probabilities, ["fill-coral", "fill-teal", "fill-amber", "fill-violet"]);
+}
+
+function updateSensorHistories(sensors) {
+  SENSOR_SERIES.forEach((series) => {
+    const history = sensorHistories[series.key];
+    history.push(num(sensors[series.key]));
+    if (history.length > 96) history.shift();
+  });
+  drawSensorGraphs();
+}
+
+function drawSensorGraphs() {
+  SENSOR_SERIES.forEach(drawSensorGraph);
+}
+
+function drawSensorGraph(series) {
+  const canvas = document.getElementById(series.canvasId);
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const rect = canvas.getBoundingClientRect();
+  const width = rect.width || 1;
+  const height = rect.height || 1;
+  const ratio = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.max(1, Math.floor(width * ratio));
+  canvas.height = Math.max(1, Math.floor(height * ratio));
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  const history = sensorHistories[series.key] || [];
+  const [minY, maxY] = sensorRange(history, series.range);
+
+  ctx.save();
+  ctx.strokeStyle = "rgba(131,239,255,.1)";
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= width; x += 18) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, height);
+    ctx.stroke();
+  }
+  for (let y = 0; y <= height; y += 18) {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(width, y);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  if (!history.length) return;
+
+  const points = history.map((value, index) => {
+    const x = history.length === 1 ? width : (index / (history.length - 1)) * width;
+    const normalized = 1 - ((value - minY) / Math.max(maxY - minY, 1e-6));
+    const y = clamp(normalized, 0, 1) * (height - 12) + 6;
+    return { x, y };
+  });
+
+  const gradient = ctx.createLinearGradient(0, 0, 0, height);
+  gradient.addColorStop(0, `rgba(${series.color},.28)`);
+  gradient.addColorStop(1, `rgba(${series.color},0)`);
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, height);
+  points.forEach((point) => ctx.lineTo(point.x, point.y));
+  ctx.lineTo(points[points.length - 1].x, height);
+  ctx.closePath();
+  ctx.fillStyle = gradient;
+  ctx.fill();
+
+  ctx.save();
+  ctx.shadowBlur = 14;
+  ctx.shadowColor = `rgba(${series.color},.7)`;
+  ctx.strokeStyle = `rgba(${series.color},.92)`;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  points.forEach((point, index) => {
+    if (index === 0) ctx.moveTo(point.x, point.y);
+    else ctx.lineTo(point.x, point.y);
+  });
+  ctx.stroke();
+  ctx.restore();
+
+  const latest = points[points.length - 1];
+  ctx.fillStyle = `rgb(${series.color})`;
+  ctx.shadowBlur = 14;
+  ctx.shadowColor = `rgba(${series.color},.7)`;
+  ctx.beginPath();
+  ctx.arc(latest.x, latest.y, 3.5, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function sensorRange(history, fallbackRange) {
+  const [fallbackMin, fallbackMax] = fallbackRange;
+  if (!history.length) return [fallbackMin, fallbackMax];
+  let min = Math.min(...history);
+  let max = Math.max(...history);
+  const fallbackSpan = Math.max(fallbackMax - fallbackMin, 1e-6);
+  if (max - min < fallbackSpan * 0.08) {
+    const center = history[history.length - 1];
+    const span = fallbackSpan * 0.08;
+    min = center - span / 2;
+    max = center + span / 2;
+  } else {
+    const pad = (max - min) * 0.16;
+    min -= pad;
+    max += pad;
+  }
+  return [
+    Math.max(fallbackMin, min),
+    Math.min(fallbackMax, max),
+  ];
+}
+
+function resizeBiosignalCanvas() {
+  if (!biosignalCanvas || !biosignalCtx) return;
+  const rect = biosignalCanvas.getBoundingClientRect();
+  const ratio = Math.min(window.devicePixelRatio || 1, 2);
+  biosignalCanvas.width = Math.max(1, Math.floor(rect.width * ratio));
+  biosignalCanvas.height = Math.max(1, Math.floor(rect.height * ratio));
+  biosignalCtx.setTransform(ratio, 0, 0, ratio, 0, 0);
+}
+
+function drawBiosignalFrame() {
+  if (!biosignalCanvas || !biosignalCtx) {
+    requestAnimationFrame(drawBiosignalFrame);
+    return;
+  }
+
+  const rect = biosignalCanvas.getBoundingClientRect();
+  const width = rect.width || 1;
+  const height = rect.height || 1;
+  biosignalTick += 0.018;
+  biosignalCtx.clearRect(0, 0, width, height);
+
+  drawSignalGrid(width, height);
+  if (activeShortcut === "0") {
+    drawNoSignalFrame(width, height);
+    requestAnimationFrame(drawBiosignalFrame);
+    return;
+  }
+
+  const gsr = clamp(num(latestSensors.gsr) / 42000, 0, 1);
+  const ppg = clamp((num(latestSensors.ppg) - 45) / 150, 0, 1);
+  const eeg = clamp((
+    num(latestSensors.delta) +
+    num(latestSensors.theta) +
+    num(latestSensors.low_alpha) +
+    num(latestSensors.high_alpha) +
+    num(latestSensors.low_beta) +
+    num(latestSensors.high_beta) +
+    num(latestSensors.low_gamma) +
+    num(latestSensors.mid_gamma)
+  ) / 8, 0, 1);
+
+  drawSignalWave({
+    y: height * 0.35,
+    amplitude: 20 + gsr * 44,
+    frequency: 1.25 + gsr * 1.5,
+    phase: biosignalTick * (1.2 + gsr),
+    color: "40,248,220",
+    pulse: gsr,
+    width,
+  });
+  drawSignalWave({
+    y: height * 0.56,
+    amplitude: 14 + ppg * 36,
+    frequency: 1.8 + ppg * 1.2,
+    phase: biosignalTick * (2.1 + ppg),
+    color: "255,95,130",
+    pulse: ppg,
+    width,
+  });
+  drawSignalWave({
+    y: height * 0.74,
+    amplitude: 10 + eeg * 32,
+    frequency: 2.4 + eeg * 1.8,
+    phase: biosignalTick * (1.5 + eeg),
+    color: "169,140,255",
+    pulse: eeg,
+    width,
+  });
+
+  const sweepX = (biosignalTick * 130) % (width + 120) - 60;
+  const gradient = biosignalCtx.createLinearGradient(sweepX - 80, 0, sweepX + 80, 0);
+  gradient.addColorStop(0, "rgba(40,248,220,0)");
+  gradient.addColorStop(.5, "rgba(40,248,220,.28)");
+  gradient.addColorStop(1, "rgba(40,248,220,0)");
+  biosignalCtx.fillStyle = gradient;
+  biosignalCtx.fillRect(sweepX - 80, 0, 160, height);
+
+  requestAnimationFrame(drawBiosignalFrame);
+}
+
+function drawSignalGrid(width, height) {
+  biosignalCtx.save();
+  biosignalCtx.strokeStyle = "rgba(131,239,255,.08)";
+  biosignalCtx.lineWidth = 1;
+  const offset = (biosignalTick * 24) % 40;
+  for (let x = -40 + offset; x < width + 40; x += 40) {
+    biosignalCtx.beginPath();
+    biosignalCtx.moveTo(x, 0);
+    biosignalCtx.lineTo(x, height);
+    biosignalCtx.stroke();
+  }
+  for (let y = 0; y < height; y += 32) {
+    biosignalCtx.beginPath();
+    biosignalCtx.moveTo(0, y);
+    biosignalCtx.lineTo(width, y);
+    biosignalCtx.stroke();
+  }
+  biosignalCtx.restore();
+}
+
+function drawSignalWave({ y, amplitude, frequency, phase, color, pulse, width }) {
+  biosignalCtx.save();
+  biosignalCtx.lineWidth = 2;
+  biosignalCtx.shadowBlur = 22;
+  biosignalCtx.shadowColor = `rgba(${color},.65)`;
+  biosignalCtx.strokeStyle = `rgba(${color},.9)`;
+  biosignalCtx.beginPath();
+  const step = 5;
+  for (let x = 0; x <= width + step; x += step) {
+    const t = x / width;
+    const base = Math.sin((t * Math.PI * 2 * frequency) + phase) * amplitude;
+    const harmonic = Math.sin((t * Math.PI * 2 * frequency * 2.8) - phase * 1.4) * amplitude * .22;
+    const spike = Math.pow(Math.max(0, Math.sin((t * Math.PI * 2 * (frequency * 1.7)) + phase * 2.2)), 16) * amplitude * (1.2 + pulse);
+    const yy = y + base + harmonic - spike;
+    if (x === 0) biosignalCtx.moveTo(x, yy);
+    else biosignalCtx.lineTo(x, yy);
+  }
+  biosignalCtx.stroke();
+  biosignalCtx.globalAlpha = .18;
+  biosignalCtx.lineWidth = 9;
+  biosignalCtx.stroke();
+  biosignalCtx.restore();
+}
+
+function drawNoSignalFrame(width, height) {
+  biosignalCtx.save();
+  biosignalCtx.strokeStyle = "rgba(255,95,130,.72)";
+  biosignalCtx.shadowBlur = 18;
+  biosignalCtx.shadowColor = "rgba(255,95,130,.55)";
+  biosignalCtx.lineWidth = 2;
+  [0.38, 0.56, 0.74].forEach((position) => {
+    const y = height * position;
+    biosignalCtx.beginPath();
+    biosignalCtx.moveTo(0, y);
+    biosignalCtx.lineTo(width, y);
+    biosignalCtx.stroke();
+  });
+  biosignalCtx.shadowBlur = 0;
+  biosignalCtx.fillStyle = "rgba(255,95,130,.9)";
+  biosignalCtx.font = "700 13px DM Sans, sans-serif";
+  biosignalCtx.fillText("NO SIGNAL", 22, height - 24);
+  biosignalCtx.restore();
+}
+
+function renderEmotion(emotion, confidence, probabilities) {
+  const label = titleCase(emotion || "Neutral");
+  setText("emotion-lbl", `${label} (${pct(confidence)}%)`);
+  setText("emotion-label", label);
+  setText("emotion-conf", pct(confidence));
+  setMeter("emotion-meter", confidence, "var(--teal)");
+  probBars("emotion-probs", probabilities);
+}
+
+function renderTimeline(steps) {
+  const el = document.getElementById("timeline-container");
+  if (activeShortcut === "0") {
+    el.innerHTML = '<div class="empty-state">No signal detected. Forecast paused.</div>';
+    return;
+  }
+  if (!steps.length) {
+    el.innerHTML = '<div class="empty-state">Forecast is waiting for predictor output.</div>';
+    return;
+  }
+
+  el.innerHTML = steps.map((step) => {
+    const rawState = step.state || step.predicted_state || "UNKNOWN";
+    const label = formatState(rawState);
+    const severity = stateSeverity(rawState);
+    const dotClass = severity >= 3 ? "dot-stress" : severity <= 1 ? "dot-low" : "dot-normal";
+    const gsr = pick(step, ["gsr", "GSR"]);
+    const ppg = pick(step, ["ppg", "PPG"]);
+    const alpha = pick(step, ["highalpha", "high_alpha", "HighAlpha", "eeg_alpha"]);
+    const beta = pick(step, ["highbeta", "high_beta", "HighBeta", "eeg_beta"]);
+    return `<div class="tl-step">
+      <div class="tl-dot ${dotClass}"></div>
+      <div class="tl-state" style="color:${stateColor(label)}">${label}</div>
+      <div class="tl-vals">GSR ${fmt(gsr,0)}<br>PPG ${fmt(ppg,0)}<br>Alpha ${fmt(alpha,2)}<br>Beta ${fmt(beta,2)}</div>
+      <div class="tl-vals">Step ${step.step || ""}</div>
+    </div>`;
+  }).join("");
+}
+
+function renderRecommendations(details, fallbackList) {
+  if (!details) {
+    renderRecommendationList(fallbackList);
+    return;
+  }
+
+  const trendClass = details.trend === "worsening"
+    ? "trend-worsen"
+    : details.trend === "improving"
+      ? "trend-improve"
+      : "trend-stable";
+  const trendIcon = details.trend === "worsening" ? "📉" : details.trend === "improving" ? "📈" : "📊";
+  document.getElementById("trend-label").textContent = titleCase(details.trend || "stable");
+
+  let html = `<div class="trend-badge ${trendClass}">${trendIcon} ${escapeHtml(details.trend_message || "")}</div>`;
+  if (details.emotion_tip) {
+    html += `<div class="emotion-tip">${escapeHtml(details.emotion_tip)}</div>`;
+  }
+  html += recommendationSection("🚨", "First Aid", "Immediate", "tag-red", "rec-first-aid", details.first_aid || []);
+  html += recommendationSection("🌿", "Lifestyle", "Daily", "tag-green", "rec-lifestyle", details.lifestyle || []);
+  html += recommendationSection("🩺", "Professional", "When needed", "tag-blue", "rec-professional", details.professional || []);
+  document.getElementById("rec-body").innerHTML = html;
+}
+
+function renderRecommendationList(items) {
+  const list = items.length ? items : ["Live assessment guidance is waiting for sensor output."];
+  document.getElementById("rec-body").innerHTML = `
+    <div class="rec-section">
+      <div class="rec-label">💡 Guidance</div>
+      <ul class="rec-list rec-lifestyle">${list.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+    </div>`;
+}
+
+function recommendationSection(icon, label, tag, tagClass, listClass, items) {
+  const safeItems = items.length ? items : ["No recommendation available."];
+  return `<div class="rec-section">
+    <div class="rec-label">${icon} ${label} <span class="rec-tag ${tagClass}">${tag}</span></div>
+    <ul class="rec-list ${listClass}">${safeItems.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+  </div>`;
+}
+
+function probBars(containerId, probs, colors) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  if (!probs || !Object.keys(probs).length) {
+    container.innerHTML = "";
+    return;
+  }
+  const fills = colors || ["fill-teal", "fill-coral", "fill-amber", "fill-violet"];
+  container.innerHTML = Object.entries(probs)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, value], index) => {
+      const fill = fills[index % fills.length];
+      return `<div class="prob-row">
+        <span class="prob-name">${escapeHtml(formatState(name))}</span>
+        <div class="prob-track"><div class="prob-fill ${fill}" style="width:${pct(value)}%"></div></div>
+        <span class="prob-pct">${pct(value)}%</span>
+      </div>`;
+    }).join("");
+}
+
+function setDot(id, ok) {
+  const dot = document.getElementById(id);
+  if (!dot) return;
+  dot.className = `dot pulse ${ok ? "ok" : ""}`;
+}
+
+function setMeter(id, value, color) {
+  const meter = document.getElementById(id);
+  if (!meter) return;
+  meter.style.width = `${Math.max(0, Math.min(100, value * 100))}%`;
+  meter.style.background = color;
+}
+
+function setText(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+
+function pct(value) {
+  return (Number(value || 0) * 100).toFixed(1);
+}
+
+function num(value) {
+  return Number.isFinite(Number(value)) ? Number(value) : 0;
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function fmt(value, places) {
+  const n = num(value);
+  return places === 0 ? Math.round(n) : n.toFixed(places);
+}
+
+function sensorValues(gsr, ppg, delta, theta, lowAlpha, highAlpha, lowBeta, highBeta, lowGamma, midGamma) {
+  return {
+    gsr,
+    ppg,
+    delta,
+    theta,
+    low_alpha: lowAlpha,
+    high_alpha: highAlpha,
+    low_beta: lowBeta,
+    high_beta: highBeta,
+    low_gamma: lowGamma,
+    mid_gamma: midGamma,
+  };
+}
+
+function futureSteps(states, base) {
+  const [gsr, ppg, highAlpha, highBeta] = base;
+  return states.map((state, index) => ({
+    step: index + 1,
+    state,
+    gsr: gsr + index * 120,
+    ppg: ppg + index * 1.4,
+    highalpha: Math.max(0, highAlpha - index * .018),
+    highbeta: Math.min(1, highBeta + index * .026),
+  }));
+}
+
+function pick(obj, keys) {
+  for (const key of keys) {
+    if (obj[key] !== undefined && obj[key] !== null) return obj[key];
+  }
+  return 0;
+}
+
+function titleCase(value) {
+  return String(value || "")
+    .replace(/_/g, " ")
+    .toLowerCase()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function formatState(value) {
+  return titleCase(value || "Unknown");
+}
+
+function stateSeverity(value) {
+  const state = String(value || "").toUpperCase();
+  if (state.includes("PANIC")) return 5;
+  if (state.includes("LOW_ANXIETY")) return 2;
+  if (state.includes("ANXIETY")) return 4;
+  if (state.includes("MODERATE")) return 3;
+  if (state.includes("LOW")) return 1;
+  if (state.includes("DEPRESSION")) return 4;
+  return 2;
+}
+
+function stateColor(label) {
+  const state = String(label || "").toUpperCase();
+  if (state.includes("NO_SIGNAL")) return "var(--coral)";
+  if (state.includes("LOW_ANXIETY")) return "var(--amber)";
+  if (state.includes("MODERATE")) return "var(--amber)";
+  if (state.includes("PANIC") || state.includes("ANXIETY")) return "var(--coral)";
+  if (state.includes("DEPRESSION")) return "var(--violet)";
+  if (state.includes("LOW")) return "var(--blue)";
+  if (state.includes("STRESS")) return "var(--amber)";
+  return "var(--teal)";
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+</script>
+</body>
+</html>
