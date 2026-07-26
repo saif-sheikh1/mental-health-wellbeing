@@ -1,0 +1,103 @@
+# ============================================================================
+# MindSense AI — Training Configuration
+# ============================================================================
+
+paths:
+  sensor_csv:           "D:/fyp remake/dataset/sensors.csv"
+  facial_dataset_root:  "D:/fyp remake/dataset/archive/MMAFEDB/"
+  models_output_dir:    "./models/"
+  logs_dir:             "./logs/"
+
+training:
+  device:         "auto"       # auto = cuda if available, else cpu
+  seed:           42
+  batch_size:     512
+  num_workers:    4
+
+# ---------------------------------------------------------------------------
+# Sensor Ensemble Hyperparameters
+# ---------------------------------------------------------------------------
+sensor:
+  xgboost:
+    n_estimators:       500
+    max_depth:          8
+    learning_rate:      0.05
+    subsample:          0.8
+    colsample_bytree:   0.8
+    min_child_weight:   3
+    gamma:              0.1
+    reg_alpha:          0.1
+    reg_lambda:         1.0
+    early_stopping_rounds: 50
+
+  dnn:
+    epochs:             150
+    batch_size:         512
+    learning_rate:      0.001
+    weight_decay:       0.0001
+    patience:           20
+    T_0:                10
+    T_mult:             2
+    eta_min:            0.000001
+    max_grad_norm:      1.0
+
+  random_forest:
+    n_estimators:       300
+    class_weight:       "balanced_subsample"
+
+  ensemble_weights:
+    xgb:  0.45
+    dnn:  0.35
+    rf:   0.20
+
+# ---------------------------------------------------------------------------
+# Facial Model Hyperparameters
+# ---------------------------------------------------------------------------
+facial:
+  model_name:           "efficientnet_b2"
+  image_size:           260
+  batch_size:           32
+
+  phase1:
+    epochs:             10
+    learning_rate:      0.001
+    step_size:          5
+    gamma:              0.5
+
+  phase2:
+    epochs:             40
+    backbone_lr:        0.00001
+    head_lr:            0.001
+    backbone_wd:        0.0001
+    head_wd:            0.00001
+    label_smoothing:    0.1
+    max_grad_norm:      1.0
+    patience:           15
+    mixup_alpha:        0.2
+    mixup_prob:         0.5
+
+# ---------------------------------------------------------------------------
+# Future Predictor Hyperparameters
+# ---------------------------------------------------------------------------
+future_predictor:
+  seq_len_input:        10
+  seq_len_output:       5
+  hidden_size:          256
+  num_layers:           2
+  dropout:              0.3
+  n_sequences:          100000
+  epochs:               100
+  batch_size:           256
+  learning_rate:        0.0005
+  patience:             20
+  teacher_forcing_start: 0.9
+  teacher_forcing_end:   0.1
+
+# ---------------------------------------------------------------------------
+# Fusion Model Hyperparameters
+# ---------------------------------------------------------------------------
+fusion:
+  n_synthetic_samples:  10000
+  epochs:               50
+  batch_size:           64
+  learning_rate:        0.001

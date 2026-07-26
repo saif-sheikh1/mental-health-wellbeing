@@ -1,0 +1,5 @@
+{
+  "n_features": 24,
+  "n_classes": 20,
+  "architecture": "SensorDNN_4block_residual"
+}

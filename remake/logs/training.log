@@ -1,0 +1,260 @@
+2026-07-23 12:23:09,882 [INFO]   Device:  cpu
+2026-07-23 12:23:09,882 [INFO]   Seed:    42
+2026-07-23 12:23:09,882 [INFO]   Config:  configs/training_config.yaml
+2026-07-23 12:23:09,882 [INFO]   Models:  ./models/
+2026-07-23 12:23:09,884 [INFO] STEP 1/5: Training Sensor Ensemble �
+2026-07-23 12:23:14,327 [INFO] ============================================================
+2026-07-23 12:23:14,327 [INFO] SENSOR PREPROCESSING PIPELINE
+2026-07-23 12:23:14,328 [INFO] ============================================================
+2026-07-23 12:23:14,328 [INFO] Step 1 � Loading CSV �
+2026-07-23 12:23:14,468 [INFO]   Loaded 50000 rows, 16 columns
+2026-07-23 12:23:14,481 [INFO] Step 2 � Encoding gender �
+2026-07-23 12:23:14,539 [INFO]   Gender classes: ['Female', 'Male', 'Other']
+2026-07-23 12:23:14,541 [INFO] Step 3 � Feature engineering (10 derived features) �
+2026-07-23 12:23:14,551 [INFO] Step 4 � Butterworth filter on GSR �
+2026-07-23 12:23:14,565 [INFO] Step 5 � log1p transform on EEG columns �
+2026-07-23 12:23:14,576 [INFO] Step 6 � Clipping PPG [30,220] and HRV [5,200] �
+2026-07-23 12:23:14,582 [INFO] Step 6 � RobustScaler on physiological columns �
+2026-07-23 12:23:14,609 [INFO] Step 7 � StandardScaler on EEG & derived columns �
+2026-07-23 12:23:14,637 [INFO] Step 8 � Encoding mental_state labels �
+2026-07-23 12:23:14,648 [INFO]   20 classes: ['anxiety_high', 'anxiety_low', 'anxiety_moderate', 'calm', 'cognitive_overload_high', 'cognitive_overload_low', 'depression_high', 'depression_low', 'depression_moderate', 'fatigue_high', 'fatigue_low', 'fatigue_moderate', 'mixed_depression_fatigue', 'mixed_stress_anxiety', 'normal', 'panic_state', 'relaxed', 'stress_high', 'stress_low', 'stress_moderate']
+2026-07-23 12:23:14,649 [INFO] Steps 9-12 � Saving preprocessing artifacts �
+2026-07-23 12:23:14,655 [INFO]   Artifacts saved to ./models/sensor_model
+2026-07-23 12:23:14,656 [INFO] Step 13 � Train/Val/Test split (70/15/15) �
+2026-07-23 12:23:14,708 [INFO]   Train: 35000, Val: 7500, Test: 7500
+2026-07-23 12:23:14,708 [INFO] Step 14 � Applying SMOTE on training set �
+2026-07-23 12:23:16,789 [INFO]   After SMOTE: 68680 training samples
+2026-07-23 12:25:19,029 [INFO]   XGBoost val accuracy: 0.8967
+2026-07-23 12:25:19,125 [INFO]   DNN params: 270,532
+2026-07-23 12:26:33,534 [INFO] ╔══════════════════════════════════════════════════════════╗
+2026-07-23 12:26:33,534 [INFO] ║            🧠 MINDSENSE AI — TRAINING PIPELINE            ║
+2026-07-23 12:26:33,534 [INFO] ╚══════════════════════════════════════════════════════════╝
+2026-07-23 12:26:33,549 [INFO]   Device:  cpu
+2026-07-23 12:26:33,549 [INFO]   Seed:    42
+2026-07-23 12:26:33,549 [INFO]   Config:  configs/training_config.yaml
+2026-07-23 12:26:33,549 [INFO]   Models:  ./models/
+2026-07-23 12:26:33,549 [INFO] 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-07-23 12:26:33,550 [INFO] STEP 1/5: Training Sensor Ensemble …
+2026-07-23 12:26:33,550 [INFO] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-07-23 12:26:37,399 [INFO] ============================================================
+2026-07-23 12:26:37,399 [INFO] SENSOR PREPROCESSING PIPELINE
+2026-07-23 12:26:37,399 [INFO] ============================================================
+2026-07-23 12:26:37,399 [INFO] Step 1 — Loading CSV …
+2026-07-23 12:26:37,515 [INFO]   Loaded 50000 rows, 16 columns
+2026-07-23 12:26:37,517 [INFO] Step 2 — Encoding gender …
+2026-07-23 12:26:37,558 [INFO]   Gender classes: ['Female', 'Male', 'Other']
+2026-07-23 12:26:37,559 [INFO] Step 3 — Feature engineering (10 derived features) …
+2026-07-23 12:26:37,570 [INFO] Step 4 — Butterworth filter on GSR …
+2026-07-23 12:26:37,573 [INFO] Step 5 — log1p transform on EEG columns …
+2026-07-23 12:26:37,584 [INFO] Step 6 — Clipping PPG [30,220] and HRV [5,200] …
+2026-07-23 12:26:37,590 [INFO] Step 6 — RobustScaler on physiological columns …
+2026-07-23 12:26:37,607 [INFO] Step 7 — StandardScaler on EEG & derived columns …
+2026-07-23 12:26:37,652 [INFO] Step 8 — Encoding mental_state labels …
+2026-07-23 12:26:37,675 [INFO]   20 classes: ['anxiety_high', 'anxiety_low', 'anxiety_moderate', 'calm', 'cognitive_overload_high', 'cognitive_overload_low', 'depression_high', 'depression_low', 'depression_moderate', 'fatigue_high', 'fatigue_low', 'fatigue_moderate', 'mixed_depression_fatigue', 'mixed_stress_anxiety', 'normal', 'panic_state', 'relaxed', 'stress_high', 'stress_low', 'stress_moderate']
+2026-07-23 12:26:37,676 [INFO] Steps 9-12 — Saving preprocessing artifacts …
+2026-07-23 12:26:37,685 [INFO]   Artifacts saved to ./models/sensor_model
+2026-07-23 12:26:37,686 [INFO] Step 13 — Train/Val/Test split (70/15/15) …
+2026-07-23 12:26:37,829 [INFO]   Train: 35000, Val: 7500, Test: 7500
+2026-07-23 12:26:37,830 [INFO] Step 14 — Applying SMOTE on training set …
+2026-07-23 12:26:40,162 [INFO]   After SMOTE: 68680 training samples
+2026-07-23 12:26:40,163 [INFO] ✅ Sensor preprocessing complete!
+2026-07-23 12:26:40,167 [INFO] ─── Training Model A: XGBoost ───
+2026-07-23 12:28:57,566 [INFO]   XGBoost saved → xgb_model.json
+2026-07-23 12:28:58,476 [INFO]   Feature importance plot saved -> ./models/sensor_model\xgb_feature_importance.png
+2026-07-23 12:28:59,223 [INFO]   XGBoost val accuracy: 0.8967
+2026-07-23 12:28:59,224 [INFO] --- Training Model B: DNN (PyTorch) ---
+2026-07-23 12:28:59,245 [INFO]   DNN params: 270,532
+2026-07-23 12:29:05,555 [INFO]   TensorBoard logging → ./logs/dnn_sensor
+2026-07-23 12:29:16,186 [INFO]   Epoch   1 — train_loss=0.7617 val_loss=0.3623 val_acc=0.8551
+2026-07-23 12:30:23,908 [INFO]   Epoch  10 — train_loss=0.3102 val_loss=0.2677 val_acc=0.8875
+2026-07-23 12:31:51,110 [INFO]   Epoch  20 — train_loss=0.2991 val_loss=0.2614 val_acc=0.8913
+2026-07-23 12:33:00,683 [INFO]   Epoch  30 — train_loss=0.2736 val_loss=0.2552 val_acc=0.8919
+2026-07-23 12:34:13,530 [INFO]   Epoch  40 — train_loss=0.2832 val_loss=0.2688 val_acc=0.8932
+2026-07-23 12:35:13,290 [INFO]   EarlyStopping: no improvement for 20 epochs. Best=0.254266 at epoch 28.
+2026-07-23 12:35:13,292 [INFO]   Early stopping at epoch 48
+2026-07-23 12:35:13,295 [INFO]   Restored best weights from epoch 28
+2026-07-23 12:35:13,333 [INFO]   DNN saved → dnn_model.pth, dnn_config.json
+2026-07-23 12:35:13,333 [INFO]   DNN best val accuracy: 0.8953
+2026-07-23 12:35:13,350 [INFO] ─── Training Model C: Random Forest ───
+2026-07-23 12:35:13,351 [INFO]   Fitting Random Forest (this may take a while) …
+2026-07-23 12:35:55,806 [INFO]   OOB score:     0.9455
+2026-07-23 12:35:55,807 [INFO]   Val accuracy:  0.8948
+2026-07-23 12:35:57,841 [INFO]   Random Forest saved → rf_model.pkl
+2026-07-23 12:35:59,040 [INFO] 
+  ╔══════════════════════════════════════╗
+2026-07-23 12:35:59,041 [INFO]   ║  SENSOR ENSEMBLE VAL ACCURACY: 0.9008 ║
+2026-07-23 12:35:59,041 [INFO]   ╚══════════════════════════════════════╝
+2026-07-23 12:35:59,041 [INFO]   Individual: XGB=0.8967  DNN=0.8953  RF=0.8948
+2026-07-23 12:35:59,041 [INFO]   ✅ Sensor model complete (00:09:25)
+2026-07-23 12:35:59,041 [INFO] 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-07-23 12:35:59,042 [INFO] STEP 2/5: Training Facial Emotion Model …
+2026-07-23 12:35:59,042 [INFO] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-07-23 12:36:05,002 [INFO] Facial classes: ['angry', 'disgust', 'fear', 'happy', 'neutral', 'sad', 'surprise']
+2026-07-23 12:36:05,007 [INFO] Train samples: 92968, Val samples: 17356
+2026-07-23 12:36:05,156 [INFO] Facial class weights: [2.023 4.111 2.733 0.465 0.452 1.087 1.637]
+2026-07-23 12:36:05,367 [INFO] Loading pretrained weights from Hugging Face hub (timm/efficientnet_b2.ra_in1k)
+2026-07-23 12:36:07,001 [INFO] HTTP Request: GET https://huggingface.co/api/agent-harnesses "HTTP/1.1 200 OK"
+2026-07-23 12:36:07,475 [INFO] HTTP Request: HEAD https://huggingface.co/timm/efficientnet_b2.ra_in1k/resolve/main/model.safetensors "HTTP/1.1 302 Found"
+2026-07-23 12:36:07,478 [WARNING] Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+2026-07-23 12:36:25,092 [INFO] [timm/efficientnet_b2.ra_in1k] Safe alternative available for 'pytorch_model.bin' (as 'model.safetensors'). Loading weights using safetensors.
+2026-07-23 12:36:32,779 [INFO]   EfficientNet-B2 loaded — backbone features: 1408
+2026-07-23 12:36:32,784 [INFO]   Total params: 8,556,553
+2026-07-23 12:36:32,807 [INFO]   TensorBoard logging → ./logs/facial_efficientnet
+2026-07-23 12:36:32,808 [INFO] 
+═══ PHASE 1: Feature Extraction (Head Only) ═══
+2026-07-23 12:36:32,813 [INFO]   Trainable params (head only): 855,559
+2026-07-23 13:37:28,375 [INFO] ╔══════════════════════════════════════════════════════════╗
+2026-07-23 13:37:28,376 [INFO] ║            🧠 MINDSENSE AI — TRAINING PIPELINE            ║
+2026-07-23 13:37:28,377 [INFO] ╚══════════════════════════════════════════════════════════╝
+2026-07-23 13:37:28,377 [INFO]   Device:  cpu
+2026-07-23 13:37:28,378 [INFO]   Seed:    42
+2026-07-23 13:37:28,378 [INFO]   Config:  configs/training_config.yaml
+2026-07-23 13:37:28,378 [INFO]   Models:  ./models/
+2026-07-23 13:37:28,378 [INFO] 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-07-23 13:37:28,378 [INFO] STEP 1/5: Training Sensor Ensemble …
+2026-07-23 13:37:28,378 [INFO] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-07-23 13:37:37,986 [INFO] ============================================================
+2026-07-23 13:37:37,987 [INFO] SENSOR PREPROCESSING PIPELINE
+2026-07-23 13:37:37,987 [INFO] ============================================================
+2026-07-23 13:37:37,987 [INFO] Step 1 — Loading CSV …
+2026-07-23 13:37:38,243 [INFO]   Loaded 50000 rows, 16 columns
+2026-07-23 13:37:38,254 [INFO] Step 2 — Encoding gender …
+2026-07-23 13:37:38,353 [INFO]   Gender classes: ['Female', 'Male', 'Other']
+2026-07-23 13:37:38,355 [INFO] Step 3 — Feature engineering (10 derived features) …
+2026-07-23 13:37:38,369 [INFO] Step 4 — Butterworth filter on GSR …
+2026-07-23 13:37:38,380 [INFO] Step 5 — log1p transform on EEG columns …
+2026-07-23 13:37:38,400 [INFO] Step 6 — Clipping PPG [30,220] and HRV [5,200] …
+2026-07-23 13:37:38,413 [INFO] Step 6 — RobustScaler on physiological columns …
+2026-07-23 13:37:38,444 [INFO] Step 7 — StandardScaler on EEG & derived columns …
+2026-07-23 13:37:38,481 [INFO] Step 8 — Encoding mental_state labels …
+2026-07-23 13:37:38,507 [INFO]   20 classes: ['anxiety_high', 'anxiety_low', 'anxiety_moderate', 'calm', 'cognitive_overload_high', 'cognitive_overload_low', 'depression_high', 'depression_low', 'depression_moderate', 'fatigue_high', 'fatigue_low', 'fatigue_moderate', 'mixed_depression_fatigue', 'mixed_stress_anxiety', 'normal', 'panic_state', 'relaxed', 'stress_high', 'stress_low', 'stress_moderate']
+2026-07-23 13:37:38,507 [INFO] Steps 9-12 — Saving preprocessing artifacts …
+2026-07-23 13:37:38,516 [INFO]   Artifacts saved to ./models/sensor_model
+2026-07-23 13:37:38,516 [INFO] Step 13 — Train/Val/Test split (70/15/15) …
+2026-07-23 13:37:38,589 [INFO]   Train: 35000, Val: 7500, Test: 7500
+2026-07-23 13:37:38,590 [INFO] Step 14 — Applying SMOTE on training set …
+2026-07-23 13:37:41,443 [INFO]   After SMOTE: 68680 training samples
+2026-07-23 13:37:41,443 [INFO] ✅ Sensor preprocessing complete!
+2026-07-23 13:37:41,451 [INFO] ─── Training Model A: XGBoost ───
+2026-07-23 13:42:30,800 [INFO]   XGBoost saved → xgb_model.json
+2026-07-23 13:42:32,444 [INFO]   Feature importance plot saved -> ./models/sensor_model\xgb_feature_importance.png
+2026-07-23 13:42:33,513 [INFO]   XGBoost val accuracy: 0.8967
+2026-07-23 13:42:33,514 [INFO] --- Training Model B: DNN (PyTorch) ---
+2026-07-23 13:42:33,546 [INFO]   DNN params: 270,532
+2026-07-23 13:42:39,421 [INFO]   TensorBoard logging → ./logs/dnn_sensor
+2026-07-23 13:43:04,503 [INFO]   Epoch   1 — train_loss=0.7617 val_loss=0.3623 val_acc=0.8551
+2026-07-23 13:46:36,534 [INFO]   Epoch  10 — train_loss=0.3102 val_loss=0.2677 val_acc=0.8875
+2026-07-23 13:50:16,644 [INFO]   Epoch  20 — train_loss=0.2991 val_loss=0.2614 val_acc=0.8913
+2026-07-23 13:51:53,166 [INFO]   Epoch  30 — train_loss=0.2736 val_loss=0.2552 val_acc=0.8919
+2026-07-23 13:53:08,937 [INFO]   Epoch  40 — train_loss=0.2832 val_loss=0.2688 val_acc=0.8932
+2026-07-23 13:54:56,633 [INFO]   EarlyStopping: no improvement for 20 epochs. Best=0.254266 at epoch 28.
+2026-07-23 13:54:56,634 [INFO]   Early stopping at epoch 48
+2026-07-23 13:54:56,645 [INFO]   Restored best weights from epoch 28
+2026-07-23 13:54:56,672 [INFO]   DNN saved → dnn_model.pth, dnn_config.json
+2026-07-23 13:54:56,672 [INFO]   DNN best val accuracy: 0.8953
+2026-07-23 13:54:56,674 [INFO] ─── Training Model C: Random Forest ───
+2026-07-23 13:54:56,674 [INFO]   Fitting Random Forest (this may take a while) …
+2026-07-23 13:56:02,105 [INFO]   OOB score:     0.9455
+2026-07-23 13:56:02,105 [INFO]   Val accuracy:  0.8948
+2026-07-23 13:56:03,729 [INFO]   Random Forest saved → rf_model.pkl
+2026-07-23 13:56:04,931 [INFO] 
+  ╔══════════════════════════════════════╗
+2026-07-23 13:56:04,932 [INFO]   ║  SENSOR ENSEMBLE VAL ACCURACY: 0.9008 ║
+2026-07-23 13:56:04,932 [INFO]   ╚══════════════════════════════════════╝
+2026-07-23 13:56:04,932 [INFO]   Individual: XGB=0.8967  DNN=0.8953  RF=0.8948
+2026-07-23 13:56:04,932 [INFO]   ✅ Sensor model complete (00:18:36)
+2026-07-23 13:56:04,932 [INFO] 
+  ⏭️  Skipping facial model (--skip-facial)
+2026-07-23 13:56:04,933 [INFO] 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-07-23 13:56:04,933 [INFO] STEP 3/5: Training Future State Predictor …
+2026-07-23 13:56:04,933 [INFO] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-07-23 13:56:04,973 [INFO] ============================================================
+2026-07-23 13:56:04,974 [INFO] FUTURE STATE PREDICTOR TRAINING
+2026-07-23 13:56:04,974 [INFO] ============================================================
+2026-07-23 13:56:04,974 [INFO] Building state transition matrix …
+2026-07-23 13:56:04,978 [INFO]   Transition matrix saved ((20, 20))
+2026-07-23 13:56:04,979 [INFO] Generating synthetic sequences …
+2026-07-23 14:00:43,913 [INFO] ╔══════════════════════════════════════════════════════════╗
+2026-07-23 14:00:43,915 [INFO] ║            🧠 MINDSENSE AI — TRAINING PIPELINE            ║
+2026-07-23 14:00:43,915 [INFO] ╚══════════════════════════════════════════════════════════╝
+2026-07-23 14:00:43,915 [INFO]   Device:  cpu
+2026-07-23 14:00:43,915 [INFO]   Seed:    42
+2026-07-23 14:00:43,915 [INFO]   Config:  configs/training_config.yaml
+2026-07-23 14:00:43,915 [INFO]   Models:  ./models/
+2026-07-23 14:00:43,915 [INFO] 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-07-23 14:00:43,915 [INFO] STEP 1/5: Training Sensor Ensemble …
+2026-07-23 14:00:43,915 [INFO] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-07-23 14:00:49,455 [INFO] ============================================================
+2026-07-23 14:00:49,455 [INFO] SENSOR PREPROCESSING PIPELINE
+2026-07-23 14:00:49,463 [INFO] ============================================================
+2026-07-23 14:00:49,463 [INFO] Step 1 — Loading CSV …
+2026-07-23 14:00:49,599 [INFO]   Loaded 50000 rows, 16 columns
+2026-07-23 14:00:49,612 [INFO] Step 2 — Encoding gender …
+2026-07-23 14:00:49,667 [INFO]   Gender classes: ['Female', 'Male', 'Other']
+2026-07-23 14:00:49,667 [INFO] Step 3 — Feature engineering (10 derived features) …
+2026-07-23 14:00:49,687 [INFO] Step 4 — Butterworth filter on GSR …
+2026-07-23 14:00:49,689 [INFO] Step 5 — log1p transform on EEG columns …
+2026-07-23 14:00:49,709 [INFO] Step 6 — Clipping PPG [30,220] and HRV [5,200] …
+2026-07-23 14:00:49,716 [INFO] Step 6 — RobustScaler on physiological columns …
+2026-07-23 14:00:49,734 [INFO] Step 7 — StandardScaler on EEG & derived columns …
+2026-07-23 14:00:49,767 [INFO] Step 8 — Encoding mental_state labels …
+2026-07-23 14:00:49,785 [INFO]   20 classes: ['anxiety_high', 'anxiety_low', 'anxiety_moderate', 'calm', 'cognitive_overload_high', 'cognitive_overload_low', 'depression_high', 'depression_low', 'depression_moderate', 'fatigue_high', 'fatigue_low', 'fatigue_moderate', 'mixed_depression_fatigue', 'mixed_stress_anxiety', 'normal', 'panic_state', 'relaxed', 'stress_high', 'stress_low', 'stress_moderate']
+2026-07-23 14:00:49,786 [INFO] Steps 9-12 — Saving preprocessing artifacts …
+2026-07-23 14:00:49,791 [INFO]   Artifacts saved to ./models/sensor_model
+2026-07-23 14:00:49,792 [INFO] Step 13 — Train/Val/Test split (70/15/15) …
+2026-07-23 14:00:49,849 [INFO]   Train: 35000, Val: 7500, Test: 7500
+2026-07-23 14:00:49,849 [INFO] Step 14 — Applying SMOTE on training set …
+2026-07-23 14:00:52,031 [INFO]   After SMOTE: 68680 training samples
+2026-07-23 14:00:52,045 [INFO] ✅ Sensor preprocessing complete!
+2026-07-23 14:00:52,050 [INFO] ─── Training Model A: XGBoost ───
+2026-07-23 14:02:53,680 [INFO]   XGBoost saved → xgb_model.json
+2026-07-23 14:02:54,212 [INFO]   Feature importance plot saved -> ./models/sensor_model\xgb_feature_importance.png
+2026-07-23 14:02:54,795 [INFO]   XGBoost val accuracy: 0.8967
+2026-07-23 14:02:54,804 [INFO] --- Training Model B: DNN (PyTorch) ---
+2026-07-23 14:02:54,817 [INFO]   DNN params: 270,532
+2026-07-23 14:02:57,828 [INFO]   TensorBoard logging → ./logs/dnn_sensor
+2026-07-23 14:03:04,770 [INFO]   Epoch   1 — train_loss=0.7617 val_loss=0.3623 val_acc=0.8551
+2026-07-23 14:04:05,520 [INFO]   Epoch  10 — train_loss=0.3102 val_loss=0.2677 val_acc=0.8875
+2026-07-23 14:05:12,446 [INFO]   Epoch  20 — train_loss=0.2991 val_loss=0.2614 val_acc=0.8913
+2026-07-23 14:06:24,101 [INFO]   Epoch  30 — train_loss=0.2736 val_loss=0.2552 val_acc=0.8919
+2026-07-23 14:07:31,677 [INFO]   Epoch  40 — train_loss=0.2832 val_loss=0.2688 val_acc=0.8932
+2026-07-23 14:08:26,904 [INFO]   EarlyStopping: no improvement for 20 epochs. Best=0.254266 at epoch 28.
+2026-07-23 14:08:26,912 [INFO]   Early stopping at epoch 48
+2026-07-23 14:08:26,914 [INFO]   Restored best weights from epoch 28
+2026-07-23 14:08:26,928 [INFO]   DNN saved → dnn_model.pth, dnn_config.json
+2026-07-23 14:08:26,929 [INFO]   DNN best val accuracy: 0.8953
+2026-07-23 14:08:26,931 [INFO] ─── Training Model C: Random Forest ───
+2026-07-23 14:08:26,931 [INFO]   Fitting Random Forest (this may take a while) …
+2026-07-23 14:09:13,564 [INFO]   OOB score:     0.9455
+2026-07-23 14:09:13,566 [INFO]   Val accuracy:  0.8948
+2026-07-23 14:09:14,246 [INFO]   Random Forest saved → rf_model.pkl
+2026-07-23 14:09:15,303 [INFO] 
+  ╔══════════════════════════════════════╗
+2026-07-23 14:09:15,308 [INFO]   ║  SENSOR ENSEMBLE VAL ACCURACY: 0.9008 ║
+2026-07-23 14:09:15,308 [INFO]   ╚══════════════════════════════════════╝
+2026-07-23 14:09:15,308 [INFO]   Individual: XGB=0.8967  DNN=0.8953  RF=0.8948
+2026-07-23 14:09:15,308 [INFO]   ✅ Sensor model complete (00:08:31)
+2026-07-23 14:09:15,308 [INFO] 
+  ⏭️  Skipping facial model (--skip-facial)
+2026-07-23 14:09:15,309 [INFO] 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-07-23 14:09:15,309 [INFO] STEP 3/5: Training Future State Predictor …
+2026-07-23 14:09:15,309 [INFO] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-07-23 14:09:15,311 [INFO] ============================================================
+2026-07-23 14:09:15,311 [INFO] FUTURE STATE PREDICTOR TRAINING
+2026-07-23 14:09:15,311 [INFO] ============================================================
+2026-07-23 14:09:15,312 [INFO] Building state transition matrix …
+2026-07-23 14:09:15,313 [INFO]   Transition matrix saved ((20, 20))
+2026-07-23 14:09:15,313 [INFO] Generating synthetic sequences …
+2026-07-23 14:10:17,814 [INFO]   Generated 100000 sequences (X: (100000, 10, 24), Y: (100000, 5))
+2026-07-23 14:10:17,932 [INFO]   Seq2Seq params: 6,934,036
+2026-07-23 14:10:17,936 [INFO]   TensorBoard logging → ./logs/future_predictor
+2026-07-23 14:18:19,242 [INFO]   Epoch   1 — train_loss=2.3519 val_loss=2.7798 val_acc=0.2275 tf=0.90
+2026-07-23 15:48:25,280 [INFO]   Epoch  10 — train_loss=2.0579 val_loss=2.4972 val_acc=0.2448 tf=0.83
+2026-07-23 17:34:58,521 [INFO]   Epoch  20 — train_loss=2.0759 val_loss=2.4042 val_acc=0.2527 tf=0.75
+2026-07-23 19:05:25,565 [INFO]   Epoch  30 — train_loss=2.0943 val_loss=2.4094 val_acc=0.2526 tf=0.67
